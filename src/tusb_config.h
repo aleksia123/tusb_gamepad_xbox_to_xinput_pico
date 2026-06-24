@@ -83,10 +83,17 @@
 #define CFG_TUH_ENABLED       1
 #define CFG_TUH_MAX_SPEED     BOARD_TUH_MAX_SPEED
 
-#if CFG_TUSB_MCU == OPT_MCU_RP2040
-// Use pico-pio-usb as host controller for raspberry rp2040
-#define CFG_TUH_RPI_PIO_USB   1
+// RHPort mode configuration (required by TinyUSB 0.18+ for tusb_init() compat)
+#ifndef CFG_TUSB_RHPORT0_MODE
+#define CFG_TUSB_RHPORT0_MODE  (OPT_MODE_DEVICE | OPT_MODE_DEFAULT_SPEED)
 #endif
+#ifndef CFG_TUSB_RHPORT1_MODE
+#define CFG_TUSB_RHPORT1_MODE  (OPT_MODE_HOST | OPT_MODE_DEFAULT_SPEED)
+#endif
+
+// This project always uses Pico-PIO-USB for the USB host port.
+// Enable it for both RP2040 and RP2350 (Waveshare RP2350-USB-A).
+#define CFG_TUH_RPI_PIO_USB   1
 
 /* USB DMA on some MCUs can only access a specific SRAM region with restriction on alignment.
  * Tinyusb use follows macros to declare transferring memory so that they can be put
@@ -144,6 +151,9 @@
 #define CFG_TUH_DEVICE_MAX          (CFG_TUH_HUB ? 4 : 1) // hub typically has 4 ports
 
 #define CFG_TUH_HID                 (3*CFG_TUH_DEVICE_MAX)
+
+// Enable XInput host class driver (Rainbow 2 Pro in Xinput mode = wired Xbox 360)
+#define CFG_TUH_XINPUT              1
 #define CFG_TUH_HID_EPIN_BUFSIZE    64
 #define CFG_TUH_HID_EPOUT_BUFSIZE   64
 

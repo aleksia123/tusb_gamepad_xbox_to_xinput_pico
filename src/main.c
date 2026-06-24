@@ -3,26 +3,42 @@
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/gpio.h"
+#include "hardware/clocks.h"
 
 #include "tusb.h"
 #include "host/usbh.h"
 #include "bsp/board_api.h"
 #include "pio_usb.h"
 #include "tusb_gamepad.h"
+#include "hardware/timer.h"
 
-// Board defs, values don't matter as long as they're unique
-#define PI_PICO 1
+// ------------------------------------------------------------------ //
+//  Board selection
+//  Values don't matter as long as they're unique.
+// ------------------------------------------------------------------ //
+#define PI_PICO          1
 #define ADAFRUIT_FEATHER 2
+#define RP2350_USB_A     3   // Waveshare RP2350-USB-A
 
-// Choose a board here //
-#define RP2040_BOARD ADAFRUIT_FEATHER
-// ------------------- //
+// >>> Choose your board here <<<
+#define OGXM_BOARD RP2350_USB_A
+// ----------------------------- //
 
-// Setting D+/D- host pins, DM = DP + 1
-#if RP2040_BOARD == PI_PICO
-    #define PIO_USB_DP_PIN 0
-#elif RP2040_BOARD == ADAFRUIT_FEATHER
-    #define PIO_USB_DP_PIN 16
+#if   OGXM_BOARD == PI_PICO
+    #define PIO_USB_DP_PIN  0          // D+ on GPIO0, D- on GPIO1
+    #define SYS_CLOCK_KHZ   120000
+
+#elif OGXM_BOARD == ADAFRUIT_FEATHER
+    #define PIO_USB_DP_PIN  16         // D+ on GPIO16, D- on GPIO17
+    #define VCC_EN_PIN      18         // Feather needs VBUS enabled on the host port
+    #define SYS_CLOCK_KHZ   120000
+
+#elif OGXM_BOARD == RP2350_USB_A
+    #define PIO_USB_DP_PIN  12
+    #define SYS_CLOCK_KHZ   240000     // RP2350 PIO USB host runs at 240 MHz
+
+#else
+    #error "No board selected"
 #endif
 
 // define pio config
@@ -44,8 +60,7 @@ extern void hid_app_task(void); // see hid_app.c
 
 void usbh_task()
 {
-    #if RP2040_BOARD == ADAFRUIT_FEATHER // Board needs VCC enabled on the USB host port
-        #define VCC_EN_PIN 18
+    #ifdef VCC_EN_PIN // Board needs VCC enabled on the USB host port
         gpio_init(VCC_EN_PIN);
         gpio_set_dir(VCC_EN_PIN, GPIO_OUT);
         gpio_put(VCC_EN_PIN, 1);
@@ -59,29 +74,32 @@ void usbh_task()
     while (1)
     {
         tuh_task();
-        hid_app_task(); // updates gamepad with dualshock 4 data
+        hid_app_task(); // updates gamepad with controller data
     }
 }
 
-int main(void) 
+int main(void)
 {
-    set_sys_clock_khz(120000, true);
+    set_sys_clock_khz(SYS_CLOCK_KHZ, true);
+
+    // RP2350 timer debug-pause bug: timers can stall even outside a debugger
+    // in some configurations, breaking the PIO USB SOF alarm.
+    // https://forums.raspberrypi.com/viewtopic.php?t=363914
+    timer_hw->dbgpause = 0;
 
     board_init();
 
     enum InputMode input_mode = INPUT_MODE_XINPUT; // choose an input mode
 
-    init_tusb_gamepad(input_mode); // initalize usb device with chosen input mode
+    init_tusb_gamepad(input_mode); // initialize usb device with chosen input mode
 
     multicore_reset_core1();
     multicore_launch_core1(usbh_task); // usb host stack on core 1
 
-    while (1) 
+    while (1)
     {
-        tusb_gamepad_task(); // send and receive gamepad data
-
-        sleep_ms(1);
         tud_task();
+        tusb_gamepad_task();
     }
 
     return 0;
