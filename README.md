@@ -44,15 +44,18 @@ To build the project from source, you will need the following tools:
 
 Follow these steps in your terminal or command prompt to set up the Pico SDK, clone the repository, and build the firmware.
 
-### 1. Setup the Pico SDK
+### 
 Clone the required version of the Pico SDK, initialize its submodules, and set the environment path:
-
 ```bash
+1. Clone the required version of the Pico SDK, initialize its submodules, and set the environment path:
+
 git clone --branch 2.1.1 --depth 1 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk-right
 cd ~/pico-sdk-right && git submodule update --init
 export PICO_SDK_PATH=~/pico-sdk-right
+```
 
-### 2. Build the project
+```bash
+2. Clone and Build the Project
 git clone --recursive https://github.com/aleksia123/tusb_gamepad_xbox_to_xinput_pico.git
 cd tusb_gamepad_xbox_to_xinput_pico
 mkdir -p build
@@ -60,8 +63,9 @@ cd build
 cmake ..
 make -j$(nproc)
 
-## Acknowledgements
-
+---
+```
+## Acknowlegdements
 This project is built on top of the following open-source tools:
 * [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) - The foundational framework for RP2040/RP2350 development.
 * [TinyUSB](https://github.com/hathach/tinyusb) - The embedded USB stack handling both host controller reading and device communication.
