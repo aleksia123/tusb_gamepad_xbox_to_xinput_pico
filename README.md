@@ -42,28 +42,28 @@ To build the project from source, you will need the following tools:
 
 ## Building and Installation
 
-Follow these steps in your terminal or command prompt to set up the Pico SDK, clone the repository, and build the firmware.
+Use Linux, in my case I used WSL and follow these steps to set up the Pico SDK, clone the repository, and build the firmware.
 
 ### 
 Clone the required version of the Pico SDK, initialize its submodules, and set the environment path:
 ```bash
+
 1. Clone the required version of the Pico SDK, initialize its submodules, and set the environment path:
 
-git clone --branch 2.1.1 --depth 1 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk-right
+git clone --branch 2.1.1 --depth 1 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk-2.1.1
 cd ~/pico-sdk-right && git submodule update --init
-export PICO_SDK_PATH=~/pico-sdk-right
+export PICO_SDK_PATH=~/pico-sdk-2.1.1
 ```
 
 ```bash
 2. Clone and Build the Project
+
 git clone --recursive https://github.com/aleksia123/tusb_gamepad_xbox_to_xinput_pico.git
 cd tusb_gamepad_xbox_to_xinput_pico
 mkdir -p build
 cd build
 cmake ..
 make -j$(nproc)
-
----
 ```
 ## Acknowlegdements
 This project is built on top of the following open-source tools:
