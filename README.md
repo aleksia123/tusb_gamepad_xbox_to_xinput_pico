@@ -65,7 +65,7 @@ cd build
 cmake ..
 make -j$(nproc)
 ```
-## Acknowlegdements
+## Acknowledgements
 This project is built on top of the following open-source tools:
 * [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk) - The foundational framework for RP2040/RP2350 development.
 * [TinyUSB](https://github.com/hathach/tinyusb) - The embedded USB stack handling both host controller reading and device communication.
