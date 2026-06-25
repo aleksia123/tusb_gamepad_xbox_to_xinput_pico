@@ -4,6 +4,7 @@ Have an Xbox controller (or a compatible third-party controller) that you want t
 
 It reads the signals from your connected controller, translates them, and sends them to your PC as a standard, universally recognized XInput device. 
 
+If you have any tips or want to make an PR, please do
 ---
 
 ## What can you do with this?
@@ -52,7 +53,7 @@ cd ~/pico-sdk-right && git submodule update --init
 export PICO_SDK_PATH=~/pico-sdk-right
 
 2. Clone and Build the Project
-git clone --recursive [https://github.com/aleksia123/tusb_gamepad_xbox_to_xinput_pico.git](https://github.com/aleksia123/tusb_gamepad_xbox_to_xinput_pico.git)
+git clone --recursive https://github.com/aleksia123/tusb_gamepad_xbox_to_xinput_pico.git
 cd tusb_gamepad_xbox_to_xinput_pico
 mkdir -p build
 cd build
