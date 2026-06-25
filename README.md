@@ -52,7 +52,7 @@ git clone --branch 2.1.1 --depth 1 https://github.com/raspberrypi/pico-sdk.git ~
 cd ~/pico-sdk-right && git submodule update --init
 export PICO_SDK_PATH=~/pico-sdk-right
 
-2. Clone and Build the Project
+### 2. Build the project
 git clone --recursive https://github.com/aleksia123/tusb_gamepad_xbox_to_xinput_pico.git
 cd tusb_gamepad_xbox_to_xinput_pico
 mkdir -p build
