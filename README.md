@@ -48,7 +48,7 @@ Follow these steps in your terminal or command prompt to set up the Pico SDK, cl
 Clone the required version of the Pico SDK, initialize its submodules, and set the environment path:
 
 ```bash
-git clone --branch 2.1.1 --depth 1 [https://github.com/raspberrypi/pico-sdk.git](https://github.com/raspberrypi/pico-sdk.git) ~/pico-sdk-right
+git clone --branch 2.1.1 --depth 1 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk-right
 cd ~/pico-sdk-right && git submodule update --init
 export PICO_SDK_PATH=~/pico-sdk-right
 
