@@ -905,8 +905,12 @@ static void process_strafe_shot(macro_gamepad_state_t *s, const macro_definition
         rt->last_fire_tick = now;
     }
 
+    // The source casts the scaled amplitude straight to short. That is safe in C#
+    // (a checked-context-free conversion wraps) but a float-to-int16 cast out of
+    // range is undefined behaviour in C, and nothing stops a hand-edited profile
+    // from carrying strafe_amplitude > 1. Clamp through int32 instead.
     float amp = m->strafe_amplitude * STICK_FULLf;
-    int16_t strafe_x = (int16_t)(rt->toggle_state ? amp : -amp);
+    int16_t strafe_x = clamp_s16((int32_t)(rt->toggle_state ? amp : -amp));
     s->lx = clamp_s16((int32_t)s->lx + strafe_x);
 }
 
