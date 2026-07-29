@@ -12,6 +12,11 @@
 #include "tusb_gamepad.h"
 #include "hardware/timer.h"
 
+#include "config_mode.h"
+#include "profile_store.h"
+#include "macro_engine.h"
+#include "mono_clock.h"
+
 // ------------------------------------------------------------------ //
 //  Board selection
 //  Values don't matter as long as they're unique.
@@ -88,6 +93,36 @@ int main(void)
     timer_hw->dbgpause = 0;
 
     board_init();
+
+    // ── Boot-mode fork ────────────────────────────────────────────────────────
+    // Sampled before ANY USB init, because the two modes bring up different
+    // device descriptors and there is no way to change your mind afterwards. See
+    // config_mode.h for why configuration cannot share the XInput interface, and
+    // for the physical procedure (short GP15 to GND, then reset).
+    //
+    // Normal boot leaves this branch untaken and the rest of main() is exactly
+    // what it always was, so the working passthrough path carries no added risk.
+    bool cfg_requested = config_mode_requested();
+
+    // Profile store first either way: config mode edits it, pad mode runs from it.
+    // A blank or corrupt image silently yields the compiled-in g_pad_config
+    // defaults and an empty macro list - a fresh board is never bricked and never
+    // needs a configurator round-trip to work.
+    profile_store_init();
+
+    if (cfg_requested)
+    {
+        config_mode_run(); // never returns
+    }
+
+    // Seed the macro engine's jitter PRNG from the hardware RNG so two boards do
+    // not emit an identical humanisation pattern - predictability is precisely
+    // what that jitter exists to defeat.
+    mono_prng_seed();
+
+    // Bind the active profile's macro list. Also resets every runtime state
+    // machine, which is the right starting condition at boot.
+    profile_store_set_active(profile_store_active_index());
 
     enum InputMode input_mode = INPUT_MODE_XINPUT; // choose an input mode
 
