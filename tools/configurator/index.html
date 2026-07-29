@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<!--
+  ReflexX-RP2350 configurator - a SEPARATE application, by design.
+
+  It does not, and cannot, talk to the dongle while the dongle is acting as a
+  gamepad: Windows binds the board's single XInput interface to xusb22.sys, which
+  claims it exclusively at kernel level (that exclusivity is what makes the
+  dongle driverless in the first place). So the board has a distinct boot mode -
+  short GP15 to GND and reset - in which it comes up as a plain USB serial device
+  with no XInput interface at all, purely to read and write its flash profiles.
+  This page speaks to THAT.
+
+  Single file, no framework, no build step, no network access. Open it directly
+  from disk in Chrome or Edge (Web Serial is Chromium-only), click Connect, pick
+  the port. The struct offsets below were generated from the firmware headers by
+  the compiler, not written by hand - see PROTOCOL.md.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReflexX RP2350 Configurator</title>
+<style>
+  :root{
+    --bg:#0c0e13; --surface:#13161d; --surface2:#181c25; --border:#242936;
+    --border-strong:#333a4a; --text:#e9ebf0; --muted:#9aa3b2; --dim:#6b7383;
+    --accent:#2dd4a7; --accent-ink:#06140f; --danger:#ec6a72; --warn:#d8a24f;
+    --info:#5fa3e6;
+    --mono:"Cascadia Code",ui-monospace,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:13px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:12px 16px;
+         background:var(--surface);border-bottom:1px solid var(--border);
+         position:sticky;top:0;z-index:10;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.02em}
+  .grow{flex:1}
+  button{font:inherit;border-radius:6px;border:1px solid var(--border-strong);
+         background:var(--surface2);color:var(--text);padding:6px 12px;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+  button.danger{border-color:var(--danger);color:var(--danger)}
+  .pill{font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--border-strong);color:var(--muted)}
+  .pill.on{border-color:var(--accent);color:var(--accent)}
+  .pill.err{border-color:var(--danger);color:var(--danger)}
+  main{padding:16px;display:grid;gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);
+       align-items:start;max-width:1500px;margin:0 auto}
+  @media (max-width:1000px){main{grid-template-columns:1fr}}
+  section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+     margin:0 0 10px;font-weight:600}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
+  label.f > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  input,select{font:inherit;background:var(--surface2);color:var(--text);
+               border:1px solid var(--border);border-radius:5px;padding:5px 7px;min-width:0;width:100%}
+  input[type=checkbox]{width:auto}
+  .grid{display:grid;gap:8px 10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .macro-list{display:flex;flex-direction:column;gap:5px;max-height:340px;overflow:auto;margin-bottom:10px}
+  .mrow{display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--border);
+        border-radius:6px;background:var(--surface2);cursor:pointer}
+  .mrow.sel{border-color:var(--accent)}
+  .mrow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mrow .ty{font-size:11px;color:var(--dim);font-family:var(--mono)}
+  .note{border-left:3px solid var(--warn);background:rgba(216,162,79,.08);
+        padding:9px 11px;border-radius:0 6px 6px 0;color:var(--muted);margin:8px 0}
+  .note.info{border-color:var(--info);background:rgba(95,163,230,.08)}
+  #log{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--bg);
+       border:1px solid var(--border);border-radius:6px;padding:8px;height:150px;overflow:auto;
+       white-space:pre-wrap;word-break:break-all}
+  fieldset{border:1px solid var(--border);border-radius:8px;margin:10px 0;padding:10px}
+  legend{font-size:11px;color:var(--accent);padding:0 6px;text-transform:uppercase;letter-spacing:.06em}
+  .hint{font-size:11px;color:var(--dim);margin:2px 0 0}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ReflexX &middot; RP2350 Configurator</h1>
+  <span id="status" class="pill">disconnected</span>
+  <span id="fw" class="pill" hidden></span>
+  <span class="grow"></span>
+  <button id="btnConnect" class="primary">Connect</button>
+  <button id="btnLoad" disabled>Load from device</button>
+  <button id="btnSend" disabled>Send to device (RAM)</button>
+  <button id="btnCommit" disabled>Commit to flash</button>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>Profile slot</h2>
+      <div class="row">
+        <label class="f" style="flex:1"><span>Editing slot</span>
+          <select id="slotSel"></select></label>
+        <label class="f" style="flex:1"><span>Profile name (16 chars)</span>
+          <input id="profName" maxlength="15"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="f" style="flex:1"><span>Boot / active slot on device</span>
+          <select id="activeSel"></select></label>
+        <button id="btnReset" class="danger" title="Restore this slot to firmware defaults (RAM only until Commit)">Reset slot</button>
+      </div>
+      <p class="hint">Slot changes and edits live in device RAM until you press
+        <em>Commit to flash</em>. On the pad itself, hold <strong>Back</strong> and tap
+        <strong>D-Pad Up/Down</strong> to cycle slots at runtime (RAM only, resets on power-cycle).</p>
+    </section>
+
+    <section>
+      <h2>Stick &amp; trigger filters</h2>
+      <div class="grid" id="filterGrid"></div>
+      <p class="hint">These are the Phase&nbsp;3 knobs the firmware already applied from
+        <code>pad_config.h</code>; they now come from the selected profile instead of being compiled in.</p>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <div id="log"></div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>Macros <span id="mcount" class="pill"></span></h2>
+      <div class="macro-list" id="macroList"></div>
+      <div class="row">
+        <button id="btnAdd">Add macro</button>
+        <button id="btnDel" class="danger">Delete selected</button>
+      </div>
+      <div id="editor"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+/* ════════════════════════════════════════════════════════════════════════════
+   LAYOUT - generated from the firmware headers with offsetof(), not hand-written.
+   Every field in these structs is a fixed-width type at natural alignment, so
+   the host compiler's layout matches the ARM build byte-for-byte; the firmware's
+   _Static_asserts lock the sizes on both sides. If HELLO reports different sizes
+   than these, the page refuses to parse rather than mis-writing flash.
+   ════════════════════════════════════════════════════════════════════════════ */
+const SIZE = {
+  macro: 1100, motion: 44, head: 184, prog: 56, track: 32, crow: 32,
+  adaptive: 24, aim: 80, script: 412, scriptStep: 24, seqStep: 12, padCfg: 10,
+};
+const MACROS_PER_PROFILE = 16, MAX_SEQ_STEPS = 8, MAX_SCRIPT_STEPS = 16;
+const NAME_LEN = 24, PROF_NAME_LEN = 16;
+
+// profile_t: name[16], pad_config_t filters, _pad[2], int32 macro_count, macros[]
+const PROF = { name: 0, filters: 16, macroCount: 28, macros: 32 };
+const PROFILE_BYTES = PROF.macros + MACROS_PER_PROFILE * SIZE.macro; // 17632
+
+const M = { // macro_definition_t
+  name:0, type:24, enabled:25, toggle_mode:26, trigger_source:27, priority:28,
+  activation_button:32, delay_ms:36, interval_ms:40, duration_ms:44, loop:48,
+  activate_on_ads:49, intensity:52, randomization_factor:56, ping_button:60,
+  source_button:64, target_button:68, recoil_compensation_x:72,
+  recoil_compensation_y:76, flick_strength:80, flick_interval_ms:84,
+  crouch_button:88, jump_button:92, jump_interval_ms:96, strafe_amplitude:100,
+  strafe_interval_ms:104, sprint_button:108, sprint_threshold:112,
+  sprint_press_duration_ms:116, breath_button:120, slide_button:124,
+  slide_cancel_button:128, slide_cancel_delay_ms:132, step_count:136, steps:140,
+  motion:236, head_assist:280, progressive_recoil:464, tracking_assist:520,
+  crowbar:552, adaptive_recoil:584, aim_assist:608, script:688,
+};
+const MO = { shape:0,target:1,easing:2,clockwise:3,additive:4,radius_x_norm:8,
+  radius_y_norm:12,rotation_deg:16,period_ms:20,duration_ms:24,direction_deg:28,
+  amplitude_norm:32,start_phase_deg:36,intensity_mul:40 };
+const HO = { short_range:0,medium_range:44,long_range:88,distance_source:132,
+  fire_on_press:133,fire_once:134,cycle_button:136,short_hold_ms_max:140,
+  medium_hold_ms_max:144,deflection_short_max:148,deflection_medium_max:152,
+  recoil_short_max:156,recoil_medium_max:160,weight_trigger:164,
+  weight_deflection:168,weight_recoil:172,refire_cooldown_ms:176,
+  min_trigger_hold_ms:180 };
+const PO = { total_ammo:0,full_mag_duration_ms:4,start_comp_x:8,start_comp_y:12,
+  mid_comp_x:16,mid_comp_y:20,end_comp_x:24,end_comp_y:28,second_stage_enabled:32,
+  second_stage_trigger_source:33,phase_easing:34,second_stage_activation_button:36,
+  second_stage_comp_x:40,second_stage_comp_y:44,noise_factor:48,sensitivity_scale:52 };
+const TO = { shape:0,target:1,easing:2,clockwise:3,free_orbit:4,base_radius_norm:8,
+  max_radius_norm:12,period_ms:16,deflection_threshold:20,scale_curve:24,intensity_mul:28 };
+const CO = { mode:0,base_htg_value:4,max_compensation:8,assist_factor:12,
+  deflection_threshold:16,deflection_curve:20,noise_factor:24,htg_scale_padrao:28 };
+const SO = { step_count:0,trigger_mode:4,auto_loop:5,speed_multiplier:8,
+  random_delay_min_ms:12,random_delay_max_ms:16,max_repeat_count:20,stop_after_ms:24,steps:28 };
+const STO = { action:0,axis:1,has_axis:2,disabled:3,button:4,value:8,
+  duration_ms:12,loop_target_index:16,repeat_count:20 };
+const QO = { button_press:0, button_release:4, delay_after_ms:8 };
+
+// pad_config_t - 6 uint8 + 3 bool + 1 uint8, all byte-aligned.
+const PC = { l_dz:0, r_dz:1, tl_max:2, tr_max:3, tl_thr:4, tr_thr:5,
+             tl_inst:6, tr_inst:7, uncap:8, corner:9 };
+
+/* ── Enums (values identical to the C# ordinals; see macro_types.h) ────────── */
+const BUTTONS = [["None",0],["D-Pad Up",0x1],["D-Pad Down",0x2],["D-Pad Left",0x4],
+  ["D-Pad Right",0x8],["Start",0x10],["Back",0x20],["L3 (left stick click)",0x40],
+  ["R3 (right stick click)",0x80],["LB",0x100],["RB",0x200],["Guide",0x400],
+  ["A",0x1000],["B",0x2000],["X",0x4000],["Y",0x8000]];
+const TRIGGER_SRC = ["None","Left trigger (LT)","Right trigger (RT)","Left bumper (LB)",
+  "Right bumper (RB)","LT or RT","LB or RB"];
+const SHAPES = ["Flick","Circle","Horizontal oval","Vertical oval","Diagonal oval"];
+const EASINGS = ["Linear","Ease-out quad","Ease-out cubic","Ease-in-out sine","Ease-out back","Smoothstep"];
+const STICKS = ["Left stick","Right stick"];
+const DIST_SRC = ["Trigger hold time","Aim-stick deflection","Recoil magnitude","Manual (cycle button)","Auto (weighted fusion)"];
+const CROW_MODE = ["Rapido (40% assist)","Padrao (90% assist)"];
+const AXES = ["Left stick X","Left stick Y","Right stick X","Right stick Y","Left trigger","Right trigger"];
+const SACT = ["Press button","Release button","Set axis","Set trigger","Wait","Loop back","Loop start"];
+const STRIG = ["While held","On press","Toggle"];
+
+const TYPES = ["NoRecoil","AutoFire","AutoPing","Remap","Sequence","Toggle","AimAssistBuff",
+  "HeadAssist","ScriptedShape","ProgressiveRecoil","TrackingAssist","AutoFireNoRecoil",
+  "InstaDropShot","JumpShot","StrafeShot","HoldBreath","SlideCancel","FastDrop","AutoSprint",
+  "CrowBar","Custom","LuaScript","AimSnap","AimSmooth","TriggerBot","AdaptiveRecoil"];
+// Types whose tuning fields are hidden because the sensor/VM they need does not
+// exist on this hardware. AdaptiveRecoil is listed but still shows its fields:
+// with no AI lock it degrades to its Min (far) compensation, which is useful.
+const UNAVAILABLE = {
+  21:"LuaScript needs an embedded Lua VM, which this firmware does not ship yet. The dispatch entry and per-macro runtime state are wired, so the macro is a documented no-op until a VM is added.",
+  22:"AimSnap needs an AI-vision target lock (screen capture + YOLO). This dongle has no camera or framebuffer, so acquisition always reports 'no target' and the macro stays silent - exactly what the desktop app does with AI Vision off.",
+  23:"AimSmooth needs an AI-vision target lock. All of its math (FOV gate, prediction, sticky lock, EMA smoothing, plant-inverted P controller) is ported and live, but with no sensor it never engages.",
+  24:"TriggerBot needs an AI-vision target lock to know the crosshair is on a target, so it never fires on this hardware.",
+};
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Serial transport - line-oriented, one outstanding request at a time.
+   ════════════════════════════════════════════════════════════════════════════ */
+let port=null, writer=null, reader=null, rxBuf="", lineWaiters=[], readLoopDone=null;
+
+function log(msg,cls){
+  const el=document.getElementById("log");
+  el.textContent += msg + "\n";
+  el.scrollTop = el.scrollHeight;
+  if(cls==="err") console.warn(msg);
+}
+function setStatus(txt,cls){
+  const el=document.getElementById("status");
+  el.textContent=txt; el.className="pill"+(cls?" "+cls:"");
+}
+
+async function readLoop(){
+  const dec=new TextDecoder();
+  try{
+    while(true){
+      const {value,done}=await reader.read();
+      if(done) break;
+      rxBuf += dec.decode(value,{stream:true});
+      let i;
+      while((i=rxBuf.search(/\r?\n/))>=0){
+        const line=rxBuf.slice(0,i);
+        rxBuf=rxBuf.slice(i+(rxBuf[i]==="\r"?2:1));
+        if(line.length===0) continue;
+        const w=lineWaiters.shift();
+        if(w) w.resolve(line); else log("<< (unsolicited) "+line);
+      }
+    }
+  }catch(e){ log("read error: "+e.message,"err"); }
+  finally{ lineWaiters.forEach(w=>w.reject(new Error("port closed"))); lineWaiters=[]; }
+}
+
+function nextLine(timeoutMs=3000){
+  return new Promise((resolve,reject)=>{
+    const w={resolve,reject};
+    lineWaiters.push(w);
+    setTimeout(()=>{
+      const idx=lineWaiters.indexOf(w);
+      if(idx>=0){ lineWaiters.splice(idx,1); reject(new Error("timeout waiting for reply")); }
+    },timeoutMs);
+  });
+}
+
+async function cmd(text,timeoutMs=3000){
+  if(!writer) throw new Error("not connected");
+  await writer.write(new TextEncoder().encode(text+"\n"));
+  return await nextLine(timeoutMs);
+}
+
+async function connect(){
+  try{
+    port=await navigator.serial.requestPort();
+    await port.open({baudRate:115200}); // CDC ignores the rate; any value works
+    writer=port.writable.getWriter();
+    reader=port.readable.getReader();
+    readLoopDone=readLoop();
+    setStatus("connected","on");
+    log("port opened");
+    const hello=await cmd("HELLO",4000);
+    log("<< "+hello);
+    if(!hello.startsWith("RXCFG")) throw new Error("not a ReflexX config-mode device: "+hello);
+    parseHello(hello);
+    ["btnLoad","btnSend","btnCommit"].forEach(id=>document.getElementById(id).disabled=false);
+    await loadSlot(currentSlot);
+  }catch(e){
+    setStatus("error","err");
+    log("connect failed: "+e.message,"err");
+  }
+}
+
+function parseHello(line){
+  const kv={};
+  line.split(/\s+/).slice(2).forEach(t=>{const [k,v]=t.split("="); if(k) kv[k]=+v;});
+  const el=document.getElementById("fw");
+  el.hidden=false;
+  el.textContent=`store v${line.split(/\s+/)[1]} · ${kv.slots} slots · ${kv.macros} macros/slot`;
+  // Refuse to parse a firmware whose layout differs from this page's tables -
+  // silently writing at wrong offsets would corrupt a profile.
+  if(kv.profile_bytes && kv.profile_bytes!==PROFILE_BYTES)
+    throw new Error(`firmware profile is ${kv.profile_bytes} B but this page expects ${PROFILE_BYTES} B - version mismatch`);
+  if(kv.macro_bytes && kv.macro_bytes!==SIZE.macro)
+    throw new Error(`firmware macro is ${kv.macro_bytes} B but this page expects ${SIZE.macro} B - version mismatch`);
+  if(typeof kv.active==="number"){ deviceActive=kv.active; renderActiveSel(); }
+}
+
+/* ── Profile transfer ─────────────────────────────────────────────────────── */
+const CHUNK=64;
+let buf=new Uint8Array(PROFILE_BYTES);   // working copy of the edited slot
+let dv=new DataView(buf.buffer);
+let currentSlot=0, deviceActive=0, selMacro=0;
+
+async function loadSlot(slot){
+  log(`reading slot ${slot} (${PROFILE_BYTES} bytes)...`);
+  const out=new Uint8Array(PROFILE_BYTES);
+  for(let off=0; off<PROFILE_BYTES; off+=CHUNK){
+    const n=Math.min(CHUNK,PROFILE_BYTES-off);
+    const rep=await cmd(`READ ${slot} ${off} ${n}`);
+    const m=rep.match(/^DATA (\d+) ([0-9a-fA-F]*)$/);
+    if(!m) throw new Error(`bad READ reply at ${off}: ${rep}`);
+    if(+m[1]!==off) throw new Error(`offset desync: asked ${off}, got ${m[1]}`);
+    const hex=m[2];
+    for(let i=0;i<n;i++) out[off+i]=parseInt(hex.substr(i*2,2),16);
+  }
+  buf=out; dv=new DataView(buf.buffer);
+  selMacro=0;
+  renderAll();
+  log(`slot ${slot} loaded`);
+}
+
+async function sendSlot(slot){
+  log(`writing slot ${slot}...`);
+  for(let off=0; off<PROFILE_BYTES; off+=CHUNK){
+    const n=Math.min(CHUNK,PROFILE_BYTES-off);
+    let hex="";
+    for(let i=0;i<n;i++) hex+=buf[off+i].toString(16).padStart(2,"0");
+    const rep=await cmd(`WRITE ${slot} ${off} ${hex}`);
+    if(!rep.startsWith("OK")) throw new Error(`WRITE failed at ${off}: ${rep}`);
+  }
+  // Verify before offering to burn flash: the device's CRC must match ours.
+  const rep=await cmd(`CRC ${slot}`);
+  const devCrc=(rep.match(/^CRC ([0-9a-fA-F]+)$/)||[])[1];
+  const ours=crc32(buf).toString(16).padStart(8,"0");
+  if(!devCrc || devCrc.toLowerCase()!==ours)
+    throw new Error(`CRC mismatch (device ${devCrc}, local ${ours}) - transfer corrupted, NOT committing`);
+  log(`slot ${slot} written to device RAM, CRC ${ours} verified`);
+}
+
+// CRC32 (IEEE 802.3, reflected, init 0xFFFFFFFF, final xor) - byte-identical to
+// profile_store_crc32() so the two sides can compare.
+const CRC_TAB=(()=>{const t=new Uint32Array(256);
+  for(let i=0;i<256;i++){let c=i;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[i]=c>>>0;}
+  return t;})();
+function crc32(bytes){
+  let c=0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++) c=CRC_TAB[(c^bytes[i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0;
+}
+
+/* ── Struct accessors ─────────────────────────────────────────────────────── */
+const macroBase=i=>PROF.macros+i*SIZE.macro;
+const gu8=o=>dv.getUint8(o), su8=(o,v)=>dv.setUint8(o,v&0xFF);
+const gu32=o=>dv.getUint32(o,true), su32=(o,v)=>dv.setUint32(o,v>>>0,true);
+const gi32=o=>dv.getInt32(o,true), si32=(o,v)=>dv.setInt32(o,v|0,true);
+const gi16=o=>dv.getInt16(o,true), si16=(o,v)=>dv.setInt16(o,v|0,true);
+const gf32=o=>dv.getFloat32(o,true), sf32=(o,v)=>dv.setFloat32(o,+v||0,true);
+function getStr(o,len){let s="";for(let i=0;i<len;i++){const c=buf[o+i];if(!c)break;s+=String.fromCharCode(c);}return s;}
+function setStr(o,len,s){for(let i=0;i<len;i++)buf[o+i]=i<s.length?(s.charCodeAt(i)&0x7F):0;}
+
+/* ── Form helpers ─────────────────────────────────────────────────────────── */
+function field(label,input,hint){
+  const l=document.createElement("label"); l.className="f";
+  const s=document.createElement("span"); s.textContent=label; s.title=label;
+  l.append(s,input);
+  if(hint){const p=document.createElement("p");p.className="hint";p.textContent=hint;l.append(p);}
+  return l;
+}
+function numInput(get,set,step){
+  const i=document.createElement("input"); i.type="number"; if(step)i.step=step;
+  i.value=get(); i.oninput=()=>{set(i.value); refreshList();};
+  return i;
+}
+function checkInput(get,set){
+  const i=document.createElement("input"); i.type="checkbox"; i.checked=!!get();
+  i.onchange=()=>{set(i.checked?1:0); refreshList();};
+  return i;
+}
+function selInput(options,get,set){
+  const s=document.createElement("select");
+  options.forEach((o,idx)=>{
+    const [txt,val]=Array.isArray(o)?o:[o,idx];
+    const e=document.createElement("option"); e.textContent=txt; e.value=val; s.append(e);
+  });
+  s.value=get();
+  s.onchange=()=>{set(+s.value); renderAll();};
+  return s;
+}
+const btnSel=(get,set)=>selInput(BUTTONS,get,set);
+
+function grid(...nodes){
+  const d=document.createElement("div"); d.className="grid"; d.append(...nodes.filter(Boolean)); return d;
+}
+function fieldset(title,...nodes){
+  const f=document.createElement("fieldset");
+  const l=document.createElement("legend"); l.textContent=title;
+  f.append(l,...nodes); return f;
+}
+
+/* ── Filters ──────────────────────────────────────────────────────────────── */
+function renderFilters(){
+  const g=document.getElementById("filterGrid");
+  g.textContent="";
+  const F=PROF.filters;
+  const u8=(off)=>[()=>gu8(F+off),v=>su8(F+off,+v)];
+  const bl=(off)=>[()=>gu8(F+off),v=>su8(F+off,v?1:0)];
+  let a;
+  a=u8(PC.l_dz);      g.append(field("Left stick deadzone (0-255)",numInput(a[0],a[1])));
+  a=u8(PC.r_dz);      g.append(field("Right stick deadzone (0-255)",numInput(a[0],a[1])));
+  a=u8(PC.tl_max);    g.append(field("LT max (255 = off)",numInput(a[0],a[1])));
+  a=u8(PC.tr_max);    g.append(field("RT max (255 = off)",numInput(a[0],a[1])));
+  a=u8(PC.tl_thr);    g.append(field("LT instant threshold",numInput(a[0],a[1])));
+  a=u8(PC.tr_thr);    g.append(field("RT instant threshold",numInput(a[0],a[1])));
+  a=bl(PC.tl_inst);   g.append(field("LT instant (digital) mode",checkInput(a[0],a[1])));
+  a=bl(PC.tr_inst);   g.append(field("RT instant (digital) mode",checkInput(a[0],a[1])));
+  a=bl(PC.uncap);     g.append(field("Uncap radius (skip circle correction)",checkInput(a[0],a[1])));
+  a=u8(PC.corner);    g.append(field("RS corner cap % (0 = off, 100 = circle)",numInput(a[0],a[1])));
+}
+
+/* ── Macro list ───────────────────────────────────────────────────────────── */
+function macroCount(){ return Math.max(0,Math.min(MACROS_PER_PROFILE,gi32(PROF.macroCount))); }
+function setMacroCount(n){ si32(PROF.macroCount,Math.max(0,Math.min(MACROS_PER_PROFILE,n))); }
+
+function renderList(){
+  const list=document.getElementById("macroList");
+  list.textContent="";
+  const n=macroCount();
+  document.getElementById("mcount").textContent=`${n} / ${MACROS_PER_PROFILE}`;
+  for(let i=0;i<n;i++){
+    const b=macroBase(i);
+    const row=document.createElement("div");
+    row.className="mrow"+(i===selMacro?" sel":"");
+    const en=document.createElement("input");
+    en.type="checkbox"; en.checked=!!gu8(b+M.enabled); en.title="Enabled";
+    en.onclick=e=>{e.stopPropagation(); su8(b+M.enabled,en.checked?1:0); refreshList();};
+    const nm=document.createElement("span");
+    nm.className="nm"; nm.textContent=getStr(b+M.name,NAME_LEN)||"(unnamed)";
+    const ty=document.createElement("span");
+    ty.className="ty"; ty.textContent=TYPES[gu8(b+M.type)]||"?";
+    row.append(en,nm,ty);
+    row.onclick=()=>{selMacro=i; renderAll();};
+    list.append(row);
+  }
+  if(n===0){
+    const p=document.createElement("p"); p.className="hint";
+    p.textContent="No macros in this slot. The pad runs pure passthrough (plus the filters above).";
+    list.append(p);
+  }
+}
+const refreshList=()=>renderList();
+
+/* ── Macro editor ─────────────────────────────────────────────────────────── */
+function renderEditor(){
+  const host=document.getElementById("editor");
+  host.textContent="";
+  const n=macroCount();
+  if(n===0||selMacro>=n) return;
+  const b=macroBase(selMacro);
+  const type=gu8(b+M.type);
+
+  const nameIn=document.createElement("input");
+  nameIn.maxLength=NAME_LEN-1; nameIn.value=getStr(b+M.name,NAME_LEN);
+  nameIn.oninput=()=>{setStr(b+M.name,NAME_LEN,nameIn.value); refreshList();};
+
+  host.append(fieldset("Macro",grid(
+    field("Name",nameIn),
+    field("Type",selInput(TYPES,()=>gu8(b+M.type),v=>su8(b+M.type,v))),
+    field("Enabled",checkInput(()=>gu8(b+M.enabled),v=>su8(b+M.enabled,v))),
+    field("Priority (low runs first)",numInput(()=>gi32(b+M.priority),v=>si32(b+M.priority,+v))),
+    field("Activation button",btnSel(()=>gu32(b+M.activation_button),v=>su32(b+M.activation_button,v))),
+    field("Toggle mode (press to latch)",checkInput(()=>gu8(b+M.toggle_mode),v=>su8(b+M.toggle_mode,v))),
+    field("Trigger source",selInput(TRIGGER_SRC,()=>gu8(b+M.trigger_source),v=>su8(b+M.trigger_source,v))),
+    field("Intensity",numInput(()=>gf32(b+M.intensity),v=>sf32(b+M.intensity,v),"0.01")),
+    field("Randomization factor",numInput(()=>gf32(b+M.randomization_factor),v=>sf32(b+M.randomization_factor,v),"0.01"))
+  )));
+
+  if(UNAVAILABLE[type]){
+    const d=document.createElement("div"); d.className="note";
+    d.innerHTML="<strong>Not available on this hardware yet.</strong> "+UNAVAILABLE[type];
+    host.append(d);
+    return;
+  }
+
+  const T=(...n)=>host.append(fieldset(...n));
+  const num=(lbl,off,step,hint)=>field(lbl,numInput(()=>step?gf32(b+off):gi32(b+off),
+        v=>step?sf32(b+off,v):si32(b+off,+v),step),hint);
+  const bt=(lbl,off)=>field(lbl,btnSel(()=>gu32(b+off),v=>su32(b+off,v)));
+
+  switch(type){
+    case 0: // NoRecoil
+      T("No-recoil compensation",grid(
+        num("Compensation X",M.recoil_compensation_x),
+        num("Compensation Y (negative pulls down)",M.recoil_compensation_y)));
+      break;
+    case 1: case 11: // AutoFire, AutoFireNoRecoil
+      T("Rapid fire",grid(
+        num("Interval ms (half-period)",M.interval_ms,null,
+            "Each interval flips the synthesized trigger, so one full shot cycle is 2x this."),
+        ...(type===11?[num("Compensation X",M.recoil_compensation_x),
+                       num("Compensation Y",M.recoil_compensation_y)]:[])));
+      break;
+    case 2: // AutoPing
+      T("Auto ping",grid(bt("Ping button",M.ping_button),
+        num("Interval ms",M.interval_ms,null,"Pulse width is fixed at 50 ms. Gated on RT.")));
+      break;
+    case 3: // Remap
+      T("Remap",grid(bt("Source button (cleared)",M.source_button),
+                     bt("Target button (set)",M.target_button)));
+      break;
+    case 5: // Toggle
+      T("Toggle",grid(bt("Target button (blank = activation button)",M.target_button)));
+      break;
+    case 4: // Sequence
+      renderSequence(host,b);
+      break;
+    case 6: // AimAssistBuff
+      T("Aim-assist buff (left-stick wiggle)",grid(
+        num("Flick strength (stick units)",M.flick_strength,null,
+            "~7000 = 21% of range, above every shooter's rotational-aim-assist threshold."),
+        num("Flick interval ms",M.flick_interval_ms),
+        field("Activate on ADS",checkInput(()=>gu8(b+M.activate_on_ads),v=>su8(b+M.activate_on_ads,v)))));
+      break;
+    case 7: // HeadAssist
+      renderHeadAssist(host,b);
+      break;
+    case 8: // ScriptedShape
+      T("Motion",...[renderMotion(b+M.motion)]);
+      break;
+    case 9: // ProgressiveRecoil
+      renderProgressive(host,b);
+      break;
+    case 10: // TrackingAssist
+      renderTracking(host,b);
+      break;
+    case 12: case 17: // InstaDropShot, FastDrop
+      T(type===12?"Insta drop-shot":"Fast drop",grid(bt("Crouch / prone button",M.crouch_button)));
+      break;
+    case 13: // JumpShot
+      T("Jump shot",grid(bt("Jump button",M.jump_button),
+        num("Jump interval ms",M.jump_interval_ms,null,"Press width is fixed at 80 ms.")));
+      break;
+    case 14: // StrafeShot
+      T("Strafe shot",grid(
+        field("Strafe amplitude (0-1)",numInput(()=>gf32(b+M.strafe_amplitude),
+              v=>sf32(b+M.strafe_amplitude,v),"0.01")),
+        num("Strafe interval ms per side",M.strafe_interval_ms)));
+      break;
+    case 15: // HoldBreath
+      T("Hold breath",grid(bt("Breath button (L3 / R3)",M.breath_button)));
+      const hb=document.createElement("p"); hb.className="hint";
+      hb.textContent="Gated on ADS: trigger source None or RT both mean 'use LT'. Pick LB/RB only if you aim with a bumper.";
+      host.append(hb);
+      break;
+    case 16: // SlideCancel
+      T("Slide cancel",grid(bt("Slide button",M.slide_button),
+        bt("Cancel button (same = re-press)",M.slide_cancel_button),
+        num("Cancel delay ms",M.slide_cancel_delay_ms,null,"Cancel press lasts 80 ms.")));
+      break;
+    case 18: // AutoSprint
+      T("Auto sprint",grid(bt("Sprint button",M.sprint_button),
+        field("Forward threshold (0.05-1)",numInput(()=>gf32(b+M.sprint_threshold),
+              v=>sf32(b+M.sprint_threshold,v),"0.01")),
+        num("Press duration ms (10-500)",M.sprint_press_duration_ms,null,
+            "Sprint is a tap, not a hold; re-arms when you release forward.")));
+      break;
+    case 19: // CrowBar
+      renderCrowbar(host,b);
+      break;
+    case 20: // Custom
+      renderScript(host,b);
+      break;
+    case 25: // AdaptiveRecoil
+      renderAdaptive(host,b);
+      break;
+  }
+}
+
+function renderMotion(o){
+  const num=(lbl,off,hint)=>field(lbl,numInput(()=>gf32(o+off),v=>sf32(o+off,v),"0.01"),hint);
+  return grid(
+    field("Shape",selInput(SHAPES,()=>gu8(o+MO.shape),v=>su8(o+MO.shape,v))),
+    field("Target stick",selInput(STICKS,()=>gu8(o+MO.target),v=>su8(o+MO.target,v))),
+    field("Easing",selInput(EASINGS,()=>gu8(o+MO.easing),v=>su8(o+MO.easing,v))),
+    field("Clockwise",checkInput(()=>gu8(o+MO.clockwise),v=>su8(o+MO.clockwise,v))),
+    field("Additive (off = override stick)",checkInput(()=>gu8(o+MO.additive),v=>su8(o+MO.additive,v))),
+    num("Radius X (0-1)",MO.radius_x_norm),
+    num("Radius Y (0-1)",MO.radius_y_norm),
+    num("Rotation deg (diagonal oval)",MO.rotation_deg),
+    num("Period ms (one revolution)",MO.period_ms),
+    num("Duration ms (0 = while held)",MO.duration_ms),
+    num("Flick direction deg (90 = up)",MO.direction_deg),
+    num("Flick amplitude (0-1)",MO.amplitude_norm),
+    num("Start phase deg",MO.start_phase_deg),
+    num("Intensity multiplier",MO.intensity_mul));
+}
+
+function renderHeadAssist(host,b){
+  const h=b+M.head_assist;
+  const f=(lbl,off,hint)=>field(lbl,numInput(()=>gf32(h+off),v=>sf32(h+off,v),"0.01"),hint);
+  const i=(lbl,off)=>field(lbl,numInput(()=>gi32(h+off),v=>si32(h+off,+v)));
+  host.append(fieldset("Head assist - distance estimator",grid(
+    field("Distance source",selInput(DIST_SRC,()=>gu8(h+HO.distance_source),v=>su8(h+HO.distance_source,v))),
+    field("Cycle button (manual mode)",btnSel(()=>gu32(h+HO.cycle_button),v=>su32(h+HO.cycle_button,v))),
+    field("Fire on press (ADS snap)",checkInput(()=>gu8(h+HO.fire_on_press),v=>su8(h+HO.fire_on_press,v))),
+    field("Fire once per press",checkInput(()=>gu8(h+HO.fire_once),v=>su8(h+HO.fire_once,v))),
+    f("Short hold ms max",HO.short_hold_ms_max),
+    f("Medium hold ms max",HO.medium_hold_ms_max),
+    f("Deflection short max (0-1)",HO.deflection_short_max),
+    f("Deflection medium max (0-1)",HO.deflection_medium_max),
+    f("Recoil short max",HO.recoil_short_max),
+    f("Recoil medium max",HO.recoil_medium_max),
+    f("Weight: trigger",HO.weight_trigger),
+    f("Weight: deflection",HO.weight_deflection),
+    f("Weight: recoil",HO.weight_recoil,"Recoil scoring needs weapon detection (screen capture), which this hardware lacks - it contributes a neutral 0.5."),
+    i("Re-fire cooldown ms",HO.refire_cooldown_ms),
+    i("Min trigger hold ms",HO.min_trigger_hold_ms))));
+  host.append(fieldset("Short-range flick",renderMotion(h+HO.short_range)));
+  host.append(fieldset("Medium-range flick",renderMotion(h+HO.medium_range)));
+  host.append(fieldset("Long-range flick",renderMotion(h+HO.long_range)));
+}
+
+function renderProgressive(host,b){
+  const p=b+M.progressive_recoil;
+  const i=(lbl,off,hint)=>field(lbl,numInput(()=>gi32(p+off),v=>si32(p+off,+v)),hint);
+  const f=(lbl,off,hint)=>field(lbl,numInput(()=>gf32(p+off),v=>sf32(p+off,v),"0.01"),hint);
+  host.append(fieldset("Progressive recoil - phases",grid(
+    i("Total ammo (splits phases)",PO.total_ammo),
+    f("Full magazine duration ms",PO.full_mag_duration_ms),
+    i("Start comp X",PO.start_comp_x), i("Start comp Y",PO.start_comp_y),
+    i("Mid comp X",PO.mid_comp_x),     i("Mid comp Y",PO.mid_comp_y),
+    i("End comp X",PO.end_comp_x),     i("End comp Y",PO.end_comp_y),
+    field("Phase easing",selInput(EASINGS,()=>gu8(p+PO.phase_easing),v=>su8(p+PO.phase_easing,v))),
+    f("Noise factor",PO.noise_factor),
+    f("Sensitivity scale",PO.sensitivity_scale,"Higher sens = faster timing AND smaller compensation."))));
+  host.append(fieldset("Second stage (e.g. while ADS)",grid(
+    field("Enabled",checkInput(()=>gu8(p+PO.second_stage_enabled),v=>su8(p+PO.second_stage_enabled,v))),
+    field("Trigger source",selInput(TRIGGER_SRC,()=>gu8(p+PO.second_stage_trigger_source),
+          v=>su8(p+PO.second_stage_trigger_source,v))),
+    field("Activation button",btnSel(()=>gu32(p+PO.second_stage_activation_button),
+          v=>su32(p+PO.second_stage_activation_button,v))),
+    i("Comp X",PO.second_stage_comp_x), i("Comp Y",PO.second_stage_comp_y))));
+  const n=document.createElement("p"); n.className="hint";
+  n.textContent="This macro is silent until you pick a trigger source - unlike NoRecoil it does not default to RT.";
+  host.append(n);
+}
+
+function renderTracking(host,b){
+  const t=b+M.tracking_assist;
+  const f=(lbl,off,hint)=>field(lbl,numInput(()=>gf32(t+off),v=>sf32(t+off,v),"0.01"),hint);
+  host.append(fieldset("Tracking assist - orbital overlay",grid(
+    field("Shape",selInput(SHAPES,()=>gu8(t+TO.shape),v=>su8(t+TO.shape,v))),
+    field("Target stick",selInput(STICKS,()=>gu8(t+TO.target),v=>su8(t+TO.target,v))),
+    field("Easing",selInput(EASINGS,()=>gu8(t+TO.easing),v=>su8(t+TO.easing,v))),
+    field("Clockwise",checkInput(()=>gu8(t+TO.clockwise),v=>su8(t+TO.clockwise,v))),
+    field("Free orbit (runs with idle stick)",checkInput(()=>gu8(t+TO.free_orbit),v=>su8(t+TO.free_orbit,v))),
+    f("Base radius (0-1)",TO.base_radius_norm),
+    f("Max radius (0-1)",TO.max_radius_norm),
+    f("Period ms",TO.period_ms),
+    f("Deflection threshold (0-1)",TO.deflection_threshold),
+    f("Scale curve",TO.scale_curve,"<1 biases toward larger radii earlier; >1 toward smaller."),
+    f("Intensity multiplier",TO.intensity_mul))));
+}
+
+function renderCrowbar(host,b){
+  const c=b+M.crowbar;
+  const f=(lbl,off,hint)=>field(lbl,numInput(()=>gf32(c+off),v=>sf32(c+off,v),"0.01"),hint);
+  const i=(lbl,off)=>field(lbl,numInput(()=>gi32(c+off),v=>si32(c+off,+v)));
+  host.append(fieldset("CrowBar - cooperative anti-recoil",grid(
+    field("Mode",selInput(CROW_MODE,()=>gu8(c+CO.mode),v=>su8(c+CO.mode,v))),
+    i("Base HTG value",CO.base_htg_value),
+    i("Max compensation per frame",CO.max_compensation),
+    f("Assist factor (0-1)",CO.assist_factor),
+    f("Deflection threshold (0-1)",CO.deflection_threshold),
+    f("Deflection curve",CO.deflection_curve),
+    f("Noise factor",CO.noise_factor),
+    f("Padrao HTG scale",CO.htg_scale_padrao))));
+  const n=document.createElement("p"); n.className="hint";
+  n.textContent="Cooperative: it only adds pull while YOU are already pulling the right stick down past the threshold.";
+  host.append(n);
+}
+
+function renderAdaptive(host,b){
+  const a=b+M.adaptive_recoil;
+  const i=(lbl,off)=>field(lbl,numInput(()=>gi32(a+off),v=>si32(a+off,+v)));
+  host.append(fieldset("Adaptive recoil",grid(
+    i("Min (far) comp X",0), i("Min (far) comp Y",4),
+    i("Max (close) comp X",8), i("Max (close) comp Y",12),
+    field("Intensity",numInput(()=>gf32(a+16),v=>sf32(a+16,v),"0.01")),
+    field("Randomization factor",numInput(()=>gf32(a+20),v=>sf32(a+20,v),"0.01")))));
+  const d=document.createElement("div"); d.className="note info";
+  d.innerHTML="<strong>Partially available.</strong> Distance scaling needs an AI-vision bbox, "+
+    "which this hardware cannot provide, so the macro degrades exactly as the desktop app does with "+
+    "AI Vision off: it applies the <em>Min (far)</em> compensation while firing. The Max values are "+
+    "stored and will take effect if a vision coprocessor is ever added.";
+  host.append(d);
+}
+
+function renderSequence(host,b){
+  const cnt=()=>Math.max(0,Math.min(MAX_SEQ_STEPS,gi32(b+M.step_count)));
+  const wrap=fieldset("Sequence steps",grid(
+    field("Step count (max "+MAX_SEQ_STEPS+")",numInput(cnt,v=>{si32(b+M.step_count,+v);renderAll();})),
+    field("Loop (off = park on last step)",checkInput(()=>gu8(b+M.loop),v=>su8(b+M.loop,v)))));
+  host.append(wrap);
+  for(let i=0;i<cnt();i++){
+    const s=b+M.steps+i*SIZE.seqStep;
+    host.append(fieldset("Step "+(i+1),grid(
+      field("Press button",btnSel(()=>gu32(s+QO.button_press),v=>su32(s+QO.button_press,v))),
+      field("Release button",btnSel(()=>gu32(s+QO.button_release),v=>su32(s+QO.button_release,v))),
+      field("Delay after ms",numInput(()=>gi32(s+QO.delay_after_ms),v=>si32(s+QO.delay_after_ms,+v))))));
+  }
+}
+
+function renderScript(host,b){
+  const sc=b+M.script;
+  const cnt=()=>Math.max(0,Math.min(MAX_SCRIPT_STEPS,gi32(sc+SO.step_count)));
+  host.append(fieldset("Custom script",grid(
+    field("Step count (max "+MAX_SCRIPT_STEPS+")",numInput(cnt,v=>{si32(sc+SO.step_count,+v);renderAll();})),
+    field("Trigger mode",selInput(STRIG,()=>gu8(sc+SO.trigger_mode),v=>su8(sc+SO.trigger_mode,v))),
+    field("Auto loop",checkInput(()=>gu8(sc+SO.auto_loop),v=>su8(sc+SO.auto_loop,v))),
+    field("Speed multiplier",numInput(()=>gf32(sc+SO.speed_multiplier),v=>sf32(sc+SO.speed_multiplier,v),"0.01")),
+    field("Random delay min ms",numInput(()=>gi32(sc+SO.random_delay_min_ms),v=>si32(sc+SO.random_delay_min_ms,+v))),
+    field("Random delay max ms",numInput(()=>gi32(sc+SO.random_delay_max_ms),v=>si32(sc+SO.random_delay_max_ms,+v))),
+    field("Max repeat count (0 = infinite)",numInput(()=>gi32(sc+SO.max_repeat_count),v=>si32(sc+SO.max_repeat_count,+v))),
+    field("Stop after ms (0 = no limit)",numInput(()=>gi32(sc+SO.stop_after_ms),v=>si32(sc+SO.stop_after_ms,+v))))));
+  for(let i=0;i<cnt();i++){
+    const s=sc+SO.steps+i*SIZE.scriptStep;
+    host.append(fieldset("Step "+(i+1),grid(
+      field("Action",selInput(SACT,()=>gu8(s+STO.action),v=>su8(s+STO.action,v))),
+      field("Button",btnSel(()=>gu32(s+STO.button),v=>su32(s+STO.button,v))),
+      field("Axis",selInput(AXES,()=>gu8(s+STO.axis),v=>su8(s+STO.axis,v))),
+      field("Axis/trigger set (arm the axis field)",checkInput(()=>gu8(s+STO.has_axis),v=>su8(s+STO.has_axis,v))),
+      field("Value (axis -32767..32767, trigger 0..255)",numInput(()=>gi16(s+STO.value),v=>si16(s+STO.value,+v))),
+      field("Duration ms (Wait)",numInput(()=>gi32(s+STO.duration_ms),v=>si32(s+STO.duration_ms,+v))),
+      field("Loop target index",numInput(()=>gi32(s+STO.loop_target_index),v=>si32(s+STO.loop_target_index,+v))),
+      field("Repeat count (0 = infinite)",numInput(()=>gi32(s+STO.repeat_count),v=>si32(s+STO.repeat_count,+v))),
+      field("Disabled (skipped)",checkInput(()=>gu8(s+STO.disabled),v=>su8(s+STO.disabled,v))))));
+  }
+}
+
+/* ── Slot / active selectors ──────────────────────────────────────────────── */
+function renderSlotSel(){
+  const s=document.getElementById("slotSel");
+  if(s.options.length===0){
+    for(let i=0;i<4;i++){const o=document.createElement("option");o.value=i;o.textContent="Slot "+i;s.append(o);}
+    s.onchange=async()=>{
+      currentSlot=+s.value;
+      try{ await loadSlot(currentSlot); }catch(e){ log("load failed: "+e.message,"err"); }
+    };
+  }
+  s.value=currentSlot;
+}
+function renderActiveSel(){
+  const s=document.getElementById("activeSel");
+  if(s.options.length===0){
+    for(let i=0;i<4;i++){const o=document.createElement("option");o.value=i;o.textContent="Slot "+i;s.append(o);}
+    s.onchange=async()=>{
+      try{ log("<< "+await cmd("ACTIVE "+ +s.value)); deviceActive=+s.value; }
+      catch(e){ log("set active failed: "+e.message,"err"); }
+    };
+  }
+  s.value=deviceActive;
+}
+
+function renderAll(){
+  renderSlotSel(); renderActiveSel(); renderFilters(); renderList(); renderEditor();
+  const pn=document.getElementById("profName");
+  pn.value=getStr(PROF.name,PROF_NAME_LEN);
+  pn.oninput=()=>setStr(PROF.name,PROF_NAME_LEN,pn.value);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+document.getElementById("btnConnect").onclick=connect;
+document.getElementById("btnLoad").onclick=async()=>{
+  try{ await loadSlot(currentSlot); }catch(e){ log("load failed: "+e.message,"err"); }
+};
+document.getElementById("btnSend").onclick=async()=>{
+  try{ await sendSlot(currentSlot); }catch(e){ log("send failed: "+e.message,"err"); }
+};
+document.getElementById("btnCommit").onclick=async()=>{
+  try{
+    await sendSlot(currentSlot);                 // always re-send + verify first
+    log("<< "+await cmd("COMMIT",8000));         // flash erase+program is slow
+  }catch(e){ log("commit failed: "+e.message,"err"); }
+};
+document.getElementById("btnReset").onclick=async()=>{
+  try{
+    log("<< "+await cmd("RESET "+currentSlot));
+    await loadSlot(currentSlot);
+  }catch(e){ log("reset failed: "+e.message,"err"); }
+};
+document.getElementById("btnAdd").onclick=()=>{
+  const n=macroCount();
+  if(n>=MACROS_PER_PROFILE){ log("slot is full ("+MACROS_PER_PROFILE+" macros)"); return; }
+  const b=macroBase(n);
+  buf.fill(0,b,b+SIZE.macro);                 // start from a clean record
+  setStr(b+M.name,NAME_LEN,"Macro "+(n+1));
+  su8(b+M.enabled,1);
+  su8(b+M.trigger_source,2);                  // RightTrigger, the C# default
+  si32(b+M.interval_ms,16);
+  sf32(b+M.intensity,1.0);
+  sf32(b+M.motion+MO.intensity_mul,1.0);
+  su8(b+M.motion+MO.additive,1);
+  sf32(b+M.script+SO.speed_multiplier,1.0);
+  setMacroCount(n+1);
+  selMacro=n;
+  renderAll();
+};
+document.getElementById("btnDel").onclick=()=>{
+  const n=macroCount();
+  if(n===0) return;
+  // Shift the tail down so the array stays dense, then clear the freed record -
+  // the firmware indexes runtime state by slot, so a stale record must not linger.
+  for(let i=selMacro;i<n-1;i++)
+    buf.copyWithin(macroBase(i),macroBase(i+1),macroBase(i+1)+SIZE.macro);
+  buf.fill(0,macroBase(n-1),macroBase(n-1)+SIZE.macro);
+  setMacroCount(n-1);
+  if(selMacro>=n-1) selMacro=Math.max(0,n-2);
+  renderAll();
+};
+
+if(!("serial" in navigator)){
+  setStatus("Web Serial unavailable","err");
+  document.getElementById("btnConnect").disabled=true;
+  log("This browser has no Web Serial API. Use desktop Chrome or Edge (not Firefox/Safari).","err");
+}
+renderAll();
+log("Ready. Put the board in config mode (short GP15 to GND, then reset), then press Connect.");
+</script>
+</body>
+</html>

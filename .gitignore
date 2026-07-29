@@ -3,5 +3,11 @@ build
 .claude
 release
 generated
-tools
+# Scratch tooling under tools/ stays ignored, but the browser configurator is a
+# deliverable. Note the trailing /* : git cannot re-include anything under an
+# EXCLUDED DIRECTORY, so a bare "tools" line would make the !negation below a
+# no-op (git never descends into tools/ to see it). Excluding the directory's
+# CONTENTS instead is what makes the exception work.
+tools/*
+!tools/configurator/
 .ignore
