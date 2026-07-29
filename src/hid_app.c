@@ -58,6 +58,10 @@
 #include "host/usbh.h"
 #include "xinput_host.h"
 #include "tusb_gamepad.h"
+#include "pad_config.h"
+#include "axial_deadzone.h"
+#include "stick_radial.h"
+#include "trigger_utils.h"
 
 //--------------------------------------------------------------------+
 // State
@@ -68,6 +72,9 @@ static uint8_t xinput_dev_addr = 0;
 static uint8_t xinput_instance = 0;
 static uint8_t motor_left  = 0;
 static uint8_t motor_right = 0;
+
+// Right-stick eccentricity calibration (RAM-only, re-learned each session).
+static RightStickCal rs_cal = {0};
 
 //--------------------------------------------------------------------+
 // Register the XInput host class driver with TinyUSB.
@@ -140,15 +147,43 @@ static void process_xinput(const xinput_gamepad_t* p)
     if (p->wButtons & XINPUT_GAMEPAD_GUIDE) btns.sys   = 1;
     if (p->wButtons & XINPUT_GAMEPAD_SHARE) btns.misc  = 1;
 
-    // Triggers (already 0..255)
-    trig.l = p->bLeftTrigger;
-    trig.r = p->bRightTrigger;
-
     // Thumbsticks (already int16, same convention)
     joy.lx = p->sThumbLX;
     joy.ly = p->sThumbLY;
     joy.rx = p->sThumbRX;
     joy.ry = p->sThumbRY;
+
+    // --- Stick/trigger processing pipeline (Phase 3) ---
+    const pad_config_t* cfg = &g_pad_config;
+
+    if (cfg->left_stick_axial_deadzone) {
+        uint16_t dz = (uint16_t)cfg->left_stick_axial_deadzone * 256;
+        joy.lx = axial_deadzone_s16(joy.lx, dz);
+        joy.ly = axial_deadzone_s16(joy.ly, dz);
+    }
+
+    if (cfg->right_stick_axial_deadzone) {
+        uint16_t dz = (uint16_t)cfg->right_stick_axial_deadzone * 256;
+        joy.rx = axial_deadzone_s16(joy.rx, dz);
+        joy.ry = axial_deadzone_s16(joy.ry, dz);
+    }
+
+    // Right stick: update the runtime calibrator every frame (gated on
+    // uncap_radius - calibration freezes in passthrough mode, converges only
+    // while correction is active), then apply eccentricity correction (no-op
+    // passthrough when uncap_radius) plus the independent soft corner cap
+    // (right_stick_corner_cap_pct; runs regardless of uncap_radius).
+    rs_cal_update(&rs_cal, joy.rx, joy.ry, cfg->uncap_radius);
+    correct_right_stick(&joy.rx, &joy.ry, &rs_cal, cfg->uncap_radius,
+                        cfg->right_stick_corner_cap_pct);
+
+    // Triggers: 8-bit in, 8-bit out, no intermediate quantization.
+    trig.l = cfg->trigger_l_instant
+        ? apply_trigger_instant(p->bLeftTrigger,  cfg->trigger_l_threshold)
+        : apply_trigger_limit  (p->bLeftTrigger,  cfg->trigger_l_max);
+    trig.r = cfg->trigger_r_instant
+        ? apply_trigger_instant(p->bRightTrigger, cfg->trigger_r_threshold)
+        : apply_trigger_limit  (p->bRightTrigger, cfg->trigger_r_max);
 
     // Commit to shared gamepad — no zero window visible to core 0
     gp->buttons   = btns;
