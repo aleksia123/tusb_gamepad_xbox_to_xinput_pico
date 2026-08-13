@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.12)
 message("Build type: \"${CMAKE_BUILD_TYPE}\"")
 
 # Project name
-set(NAME tusb_gamepad_ds4_to_xinput_pico-sdk)
+set(NAME tusb_gamepad_macros)
 
 set(PICO_BOARD none)
 add_compile_definitions(PICO_BOOT_STAGE2_CHOOSE_GENERIC_03H=1 PICO_XOSC_STARTUP_DELAY_MULTIPLIER=64)
@@ -36,7 +36,18 @@ target_compile_options(tusb_gamepad PRIVATE -w) # suppress warnings from third-p
 file(GLOB_RECURSE SOURCES
     "src/main.c"
     "src/hid_app.c"
-    "src/xinput_host.c")
+    "src/xinput_host.c"
+    # Phase 4: macro engine port + on-flash profile store + config-mode CDC
+    # server. Listed explicitly rather than as a bare src/*.c glob so a scratch
+    # file dropped in src/ can never silently enter the build.
+    "src/macro_engine.c"
+    "src/aim_context.c"
+    "src/profile_store.c"
+    "src/config_mode.c"
+    "src/boot_request.c"
+    # Right-stick geometry correction (C++17 header-only StickGeometry.h,
+    # bridged into the C build via this one translation unit).
+    "src/stick_geometry_bridge.cpp")
 
 add_executable(${NAME} ${SOURCES})
 
@@ -49,8 +60,18 @@ target_link_libraries(${NAME}
     pico_multicore
     hardware_pio
     hardware_clocks
+    # Phase 4 additions:
+    #   hardware_flash - flash_range_erase/program for the profile store
+    #   hardware_sync  - save_and_disable_interrupts around the flash write
+    #   pico_rand      - get_rand_32() to seed the macro-jitter PRNG
+    #   hardware_watchdog - warm-reboot + scratch registers for boot_request.c
+    hardware_flash
+    hardware_sync
+    hardware_watchdog
+    pico_rand
     tinyusb_board
     tinyusb_host
+    tinyusb_device
     pico_pio_usb
     tusb_gamepad)
 

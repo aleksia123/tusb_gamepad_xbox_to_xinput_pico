@@ -58,6 +58,13 @@
 #include "host/usbh.h"
 #include "xinput_host.h"
 #include "tusb_gamepad.h"
+#include "pad_config.h"
+#include "axial_deadzone.h"
+#include "stick_geometry_bridge.h"
+#include "trigger_utils.h"
+#include "macro_types.h"
+#include "macro_engine.h"
+#include "profile_store.h"
 
 //--------------------------------------------------------------------+
 // State
@@ -68,6 +75,88 @@ static uint8_t xinput_dev_addr = 0;
 static uint8_t xinput_instance = 0;
 static uint8_t motor_left  = 0;
 static uint8_t motor_right = 0;
+
+//--------------------------------------------------------------------+
+// Phase 4 helpers: macro engine bridge + on-pad profile switching
+//--------------------------------------------------------------------+
+
+// Translate the tusb_gamepad bitfield into the ReflexX button mask the macro
+// engine speaks. Kept as an explicit mapping rather than a memcpy/union because
+// the two layouts genuinely differ: tusb_gamepad orders its bits by controller
+// ergonomics, ReflexX inherits XInput's wButtons ordering, and `misc` has no
+// XInput home at all (see GP_MISC in macro_types.h).
+static uint32_t buttons_to_mask(const GamepadButtons *b)
+{
+    uint32_t m = 0;
+    if (b->up)    m |= GP_DPAD_UP;
+    if (b->down)  m |= GP_DPAD_DOWN;
+    if (b->left)  m |= GP_DPAD_LEFT;
+    if (b->right) m |= GP_DPAD_RIGHT;
+    if (b->a)     m |= GP_A;
+    if (b->b)     m |= GP_B;
+    if (b->x)     m |= GP_X;
+    if (b->y)     m |= GP_Y;
+    if (b->l3)    m |= GP_LEFT_THUMB;
+    if (b->r3)    m |= GP_RIGHT_THUMB;
+    if (b->back)  m |= GP_BACK;
+    if (b->start) m |= GP_START;
+    if (b->lb)    m |= GP_LEFT_SHOULDER;
+    if (b->rb)    m |= GP_RIGHT_SHOULDER;
+    if (b->sys)   m |= GP_GUIDE;
+    if (b->misc)  m |= GP_MISC;
+    return m;
+}
+
+static void mask_to_buttons(uint32_t m, GamepadButtons *b)
+{
+    b->up    = (m & GP_DPAD_UP)        ? 1 : 0;
+    b->down  = (m & GP_DPAD_DOWN)      ? 1 : 0;
+    b->left  = (m & GP_DPAD_LEFT)      ? 1 : 0;
+    b->right = (m & GP_DPAD_RIGHT)     ? 1 : 0;
+    b->a     = (m & GP_A)              ? 1 : 0;
+    b->b     = (m & GP_B)              ? 1 : 0;
+    b->x     = (m & GP_X)              ? 1 : 0;
+    b->y     = (m & GP_Y)              ? 1 : 0;
+    b->l3    = (m & GP_LEFT_THUMB)     ? 1 : 0;
+    b->r3    = (m & GP_RIGHT_THUMB)    ? 1 : 0;
+    b->back  = (m & GP_BACK)           ? 1 : 0;
+    b->start = (m & GP_START)          ? 1 : 0;
+    b->lb    = (m & GP_LEFT_SHOULDER)  ? 1 : 0;
+    b->rb    = (m & GP_RIGHT_SHOULDER) ? 1 : 0;
+    b->sys   = (m & GP_GUIDE)          ? 1 : 0;
+    b->misc  = (m & GP_MISC)           ? 1 : 0;
+}
+
+// On-pad profile switching: hold Back and tap DPad-Up / DPad-Down to cycle the
+// active slot. RAM-only, so it resets to whatever slot the flash image marks
+// active on the next power-cycle - persisting every switch would mean a flash
+// erase from inside the XInput report path, which is exactly the thing
+// profile_store.h forbids (XIP goes away and core 1 faults).
+//
+// The combo's buttons are consumed (stripped from the outgoing report) while it
+// is engaged, so the game does not also see a menu-open + dpad press. There is
+// deliberately no process-based auto-switching: this hardware has no way to know
+// what game is running.
+static void apply_profile_combo(GamepadButtons *btns)
+{
+    static bool was_up = false, was_down = false;
+
+    if (!btns->back) { was_up = false; was_down = false; return; }
+
+    bool up   = btns->up;
+    bool down = btns->down;
+    uint32_t slots = PROFILE_SLOTS;
+    uint32_t cur = profile_store_active_index();
+
+    if (up && !was_up)        profile_store_set_active((cur + 1) % slots);
+    else if (down && !was_down) profile_store_set_active((cur + slots - 1) % slots);
+
+    was_up = up;
+    was_down = down;
+
+    // Consume: Back+DPad is a live combo, not player input.
+    if (up || down) { btns->up = 0; btns->down = 0; btns->back = 0; }
+}
 
 //--------------------------------------------------------------------+
 // Register the XInput host class driver with TinyUSB.
@@ -140,15 +229,80 @@ static void process_xinput(const xinput_gamepad_t* p)
     if (p->wButtons & XINPUT_GAMEPAD_GUIDE) btns.sys   = 1;
     if (p->wButtons & XINPUT_GAMEPAD_SHARE) btns.misc  = 1;
 
-    // Triggers (already 0..255)
-    trig.l = p->bLeftTrigger;
-    trig.r = p->bRightTrigger;
-
     // Thumbsticks (already int16, same convention)
     joy.lx = p->sThumbLX;
     joy.ly = p->sThumbLY;
     joy.rx = p->sThumbRX;
     joy.ry = p->sThumbRY;
+
+    // --- On-pad profile switching (before anything reads the config) ---
+    // Runs first so a slot change takes effect on this very report rather than
+    // the next one, and so the combo buttons are stripped before the macro engine
+    // could interpret Back/DPad as somebody's activation button.
+    apply_profile_combo(&btns);
+
+    // --- Stick/trigger processing pipeline (Phase 3) ---
+    // Filter knobs now come from the active on-flash profile rather than the
+    // compile-time constant. profile_store_init() guarantees a valid working copy
+    // (falling back to g_pad_config on blank/corrupt flash), so this pointer is
+    // always good and the behaviour with an unconfigured board is byte-identical
+    // to the previous firmware.
+    const pad_config_t* cfg = &profile_store_active()->filters;
+
+    if (cfg->left_stick_axial_deadzone) {
+        uint16_t dz = (uint16_t)cfg->left_stick_axial_deadzone * 256;
+        joy.lx = axial_deadzone_s16(joy.lx, dz);
+        joy.ly = axial_deadzone_s16(joy.ly, dz);
+    }
+
+    if (cfg->right_stick_axial_deadzone) {
+        uint16_t dz = (uint16_t)cfg->right_stick_axial_deadzone * 256;
+        joy.rx = axial_deadzone_s16(joy.rx, dz);
+        joy.ry = axial_deadzone_s16(joy.ry, dz);
+    }
+
+    // Right stick: StickGeometry.h pipeline (compiled-in identity calibration
+    // -- see stick_geometry_bridge.cpp) plus the same soft corner cap as
+    // before (right_stick_corner_cap_pct). Always on; degenerates to
+    // passthrough + corner cap until the calibration is measured and filled
+    // in, matching the previous uncap_radius=true default byte-for-byte.
+    stick_geometry_process_right(&joy.rx, &joy.ry, cfg->right_stick_corner_cap_pct);
+
+    // Triggers: 8-bit in, 8-bit out, no intermediate quantization.
+    trig.l = cfg->trigger_l_instant
+        ? apply_trigger_instant(p->bLeftTrigger,  cfg->trigger_l_threshold)
+        : apply_trigger_limit  (p->bLeftTrigger,  cfg->trigger_l_max);
+    trig.r = cfg->trigger_r_instant
+        ? apply_trigger_instant(p->bRightTrigger, cfg->trigger_r_threshold)
+        : apply_trigger_limit  (p->bRightTrigger, cfg->trigger_r_max);
+
+    // --- Macro engine (Phase 4) ---
+    // Deliberately placed AFTER the filter pipeline and BEFORE the commit, for
+    // the same reason ReflexX runs CompositeInputFilter before MacroProcessor:
+    // macros reason about clean, deadzone-corrected, shaped input (e.g. CrowBar
+    // asks "is the player pulling down past 5% of range?", AutoSprint asks "is
+    // forward past 60%?"). Feeding them raw sensor values with a jittery centre
+    // would make every threshold behave differently per controller. Writing after
+    // the filters also means a macro's synthesized deflection is not re-scaled by
+    // a deadzone rescale it was never meant to pass through.
+    //
+    // Zero-macro profiles cost one null/count check inside macro_engine_process(),
+    // so an unconfigured board's path is unchanged.
+    {
+        macro_gamepad_state_t ms;
+        ms.buttons = buttons_to_mask(&btns);
+        ms.lx = joy.lx; ms.ly = joy.ly;
+        ms.rx = joy.rx; ms.ry = joy.ry;
+        ms.lt = trig.l; ms.rt = trig.r;
+        ms._pad[0] = ms._pad[1] = 0;
+
+        macro_engine_process(&ms);
+
+        mask_to_buttons(ms.buttons, &btns);
+        joy.lx = ms.lx; joy.ly = ms.ly;
+        joy.rx = ms.rx; joy.ry = ms.ry;
+        trig.l = ms.lt; trig.r = ms.rt;
+    }
 
     // Commit to shared gamepad — no zero window visible to core 0
     gp->buttons   = btns;
