@@ -11,20 +11,37 @@ While the board is acting as an XInput pad, Windows binds its single USB interfa
 to the in-box `xusb22.sys` driver, which claims the device exclusively at kernel
 level. Nothing in a browser can open it, and adding a second interface to
 `tusb_gamepad`'s fixed XInput descriptor risks breaking the driverless XInput
-enumeration that is the whole point of the dongle. So configuration is a distinct
-**boot mode**, entered by grounding a pin, in which the firmware comes up as a
-plain USB CDC device with no XInput interface and no USB host stack at all.
+enumeration that is the whole point of the dongle. So configuration is a
+distinct **boot mode**, in which the firmware comes up as a plain USB CDC
+device with no XInput interface and no USB host stack at all - and it is the
+**default on every power-on**, no jumper or button combo needed to reach it.
 
-**Entering config mode**
+**Entering config mode:** just plug the board in (or tap RUN/reset). It
+enumerates as a USB serial port immediately. Open `index.html` in Chrome/Edge
+and pick that port within **5 seconds** (`CONFIG_GRACE_MS` in
+`config_mode.c`) — if nothing has connected and sent it a command by then, it
+warm-reboots straight into normal XInput operation on its own, so an
+unattended board still ends up working as a controller. Ground **GP29** to
+GND before powering on if you want to suspend that timer entirely and take as
+long as you like (see below).
 
-1. Short **GP15** to any GND pin.
-2. Power-cycle the board, or tap RUN/reset.
-3. It enumerates as a USB serial port. Open `index.html` in Chrome/Edge and pick it.
-4. Remove the jumper and power-cycle to go back to normal pad operation.
+**Leaving config mode:** send `REBOOT` (or click the page's "Switch to Xbox
+mode" button) to warm-reboot into normal operation without unplugging; a bare
+power-cycle also returns to normal operation (and re-enters config mode first,
+per the above).
 
-GP15 is free: GP12/GP13 carry PIO-USB D+/D−, and nothing else in the project or in
-`board_init()` claims a GPIO. The pin is sampled with the internal pull-up and
-debounced (8 samples, 6-of-8 majority), so an unconnected pin always boots normally.
+That warm reboot is remembered across itself (`boot_request.h`/`.c`): a
+RUN-button reset immediately after does NOT sit through the 5s window again,
+it comes straight back up as a controller. Only an actual power cycle
+(unplug/replug) ever pays that window, and it's capped at 5s either way.
+
+GP29 is free: GP12/GP13 carry PIO-USB D+/D− (off-header on the Waveshare
+RP2350-USB-A), and nothing else in the project or in `board_init()` claims a
+GPIO. GP15 was considered first but isn't broken out to a header pin on this
+board (it only exposes GP0-10 and GP26-29), hence GP29. The pin is sampled
+with the internal pull-up and debounced (8 samples, 6-of-8 majority) once
+config mode has already started, so a floating pin just means "use the normal
+5s timer" rather than gating entry at all.
 
 ## 1. Transport
 
@@ -55,6 +72,7 @@ debounced (8 samples, 6-of-8 majority), so an unconnected pin always boots norma
 | `CRC <slot>` | `CRC <8 hex digits>` | CRC32 over the whole slot as the device holds it |
 | `RESET <slot>` | `OK` | slot ← compiled-in defaults, no macros (RAM only) |
 | `COMMIT` | `OK committed` / `ERR flash` | the only command that touches flash |
+| `REBOOT` | `OK rebooting` | leaves config mode: warm-reboots into normal (XInput) operation, no unplug needed |
 
 Errors: `ERR cmd` (unknown), `ERR args` (unparseable), `ERR range` (bounds),
 `ERR hex` (malformed payload), `ERR toolong`.

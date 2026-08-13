@@ -96,12 +96,13 @@ int main(void)
 
     // ── Boot-mode fork ────────────────────────────────────────────────────────
     // Sampled before ANY USB init, because the two modes bring up different
-    // device descriptors and there is no way to change your mind afterwards. See
-    // config_mode.h for why configuration cannot share the XInput interface, and
-    // for the physical procedure (short GP15 to GND, then reset).
-    //
-    // Normal boot leaves this branch untaken and the rest of main() is exactly
-    // what it always was, so the working passthrough path carries no added risk.
+    // device descriptors and there is no way to change your mind afterwards.
+    // Config mode is the default on every real power-on - no jumper, no
+    // combo, just plug it in (see config_mode.h). It gives up after a short
+    // grace window (or an explicit REBOOT command) and warm-reboots into
+    // XInput; boot_request.c remembers that across the reboot so THIS boot
+    // skips config mode entirely and comes up instantly as a controller -
+    // only an actual power cycle ever pays the grace window again.
     bool cfg_requested = config_mode_requested();
 
     // Profile store first either way: config mode edits it, pad mode runs from it.

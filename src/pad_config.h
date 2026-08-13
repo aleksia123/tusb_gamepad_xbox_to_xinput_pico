@@ -23,7 +23,12 @@ typedef struct {
     uint8_t  trigger_r_threshold;
     bool     trigger_l_instant;           // false = limit mode, true = instant (digital) mode
     bool     trigger_r_instant;
-    bool     uncap_radius;                // true = skip gain+circle correction (raw overshoot kept)
+    // NOTE: no longer read by hid_app.c. Right-stick gain+circle correction
+    // is now StickGeometry.h's calibration (see stick_geometry_bridge.cpp) --
+    // it is a no-op until that calibration is measured and filled in, which
+    // is what this flag used to gate. Field kept to preserve the wire layout
+    // (see PROTOCOL.md); repurpose or remove in the next protocol version bump.
+    bool     uncap_radius;
 
     // Right-stick corner cap: independent of uncap_radius. Trims ONLY the
     // diagonal tip that overshoots the given radius; everything inside passes

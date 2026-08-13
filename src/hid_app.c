@@ -60,7 +60,7 @@
 #include "tusb_gamepad.h"
 #include "pad_config.h"
 #include "axial_deadzone.h"
-#include "stick_radial.h"
+#include "stick_geometry_bridge.h"
 #include "trigger_utils.h"
 #include "macro_types.h"
 #include "macro_engine.h"
@@ -75,9 +75,6 @@ static uint8_t xinput_dev_addr = 0;
 static uint8_t xinput_instance = 0;
 static uint8_t motor_left  = 0;
 static uint8_t motor_right = 0;
-
-// Right-stick eccentricity calibration (RAM-only, re-learned each session).
-static RightStickCal rs_cal = {0};
 
 //--------------------------------------------------------------------+
 // Phase 4 helpers: macro engine bridge + on-pad profile switching
@@ -264,14 +261,12 @@ static void process_xinput(const xinput_gamepad_t* p)
         joy.ry = axial_deadzone_s16(joy.ry, dz);
     }
 
-    // Right stick: update the runtime calibrator every frame (gated on
-    // uncap_radius - calibration freezes in passthrough mode, converges only
-    // while correction is active), then apply eccentricity correction (no-op
-    // passthrough when uncap_radius) plus the independent soft corner cap
-    // (right_stick_corner_cap_pct; runs regardless of uncap_radius).
-    rs_cal_update(&rs_cal, joy.rx, joy.ry, cfg->uncap_radius);
-    correct_right_stick(&joy.rx, &joy.ry, &rs_cal, cfg->uncap_radius,
-                        cfg->right_stick_corner_cap_pct);
+    // Right stick: StickGeometry.h pipeline (compiled-in identity calibration
+    // -- see stick_geometry_bridge.cpp) plus the same soft corner cap as
+    // before (right_stick_corner_cap_pct). Always on; degenerates to
+    // passthrough + corner cap until the calibration is measured and filled
+    // in, matching the previous uncap_radius=true default byte-for-byte.
+    stick_geometry_process_right(&joy.rx, &joy.ry, cfg->right_stick_corner_cap_pct);
 
     // Triggers: 8-bit in, 8-bit out, no intermediate quantization.
     trig.l = cfg->trigger_l_instant

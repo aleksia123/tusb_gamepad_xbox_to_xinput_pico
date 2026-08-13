@@ -168,23 +168,47 @@ driver, which claims it exclusively at kernel level (and that exclusivity is wha
 makes the dongle driverless in the first place), so no browser page can open it —
 and grafting a second interface onto `tusb_gamepad`'s fixed XInput descriptor
 risks breaking XInput enumeration outright. That reasoning still holds.
-Configuration is therefore a **separate boot mode**.
+Configuration is therefore a **separate boot mode** - and unlike the original
+GP15-jumper design, it is now the **unconditional default on every power-on**:
+no jumper, no combo, just plug the board in.
 
-**Pin: GP15, active low, internal pull-up.** GP12/GP13 carry PIO-USB D+/D−; no
-other GPIO is claimed by this project or by `board_init()`. The pin is sampled
-once, very early in `main()` before any USB init, and debounced (8 samples, 6-of-8
-majority) so a floating pin can never be misread as a request.
+**Grace window (`config_mode.c`):** config mode gives up after
+`CONFIG_GRACE_MS` (5000 ms) with no host activity, or immediately on an
+explicit `REBOOT` command, and warm-reboots into normal XInput operation - so
+an unattended board still ends up working as a controller within 5 seconds.
+Ground **GP29** (active low, internal pull-up) before powering on to suspend
+that timer entirely and stay in config mode indefinitely, for an unhurried
+first-time setup. GP12/GP13 carry PIO-USB D+/D− (and are off-header on the
+Waveshare RP2350-USB-A anyway); no other GPIO is claimed by this project or by
+`board_init()`. GP15 was considered first but is not broken out to a header
+pin on the RP2350-USB-A (it only exposes GP0-10 and GP26-29), hence GP29.
+
+**Surviving the reboot without repeating the wait (`src/boot_request.h`/`.c`):**
+the warm reboot out of config mode (grace timeout or `REBOOT`) stashes a magic
+value in a watchdog scratch register before resetting. `main()` checks that
+flag, gated on `watchdog_caused_reboot()`, before deciding whether to even
+enter config mode - so a RUN-button reset immediately afterward skips config
+mode entirely and comes up as a controller with no delay. A real power-on
+reset (unplug or brown-out) clears the always-on scratch domain regardless,
+so simply power-cycling the board always lands back in config mode first -
+it can never get permanently stuck either way, and the flag is consumed the
+moment it's read so a crash loop can't wedge it there.
 
 **Procedure**
 
-1. Short **GP15 to any GND pin**.
-2. Power-cycle the board, or tap RUN/reset.
-3. It enumerates as a USB serial device — no XInput interface, no USB host stack,
-   core 1 never launched.
-4. When finished, remove the jumper and power-cycle to return to normal operation.
+1. Plug the board in (or tap RUN/reset). It enumerates as a USB serial
+   device — no XInput interface, no USB host stack, core 1 never launched.
+2. Open the configurator within 5 seconds (or ground GP29 first for no time
+   limit).
+3. When finished, send `REBOOT` (the configurator's "Switch to Xbox mode"
+   button does this) to warm-reboot straight back to normal operation — no
+   unplug needed. A bare power-cycle also returns to normal operation (via
+   config mode's grace window, same as any other power-on).
 
-Normal boot leaves that branch untaken: same descriptor, same single-interface
-XInput device, no added latency, zero risk to the working passthrough path.
+The one-time grace window is the only latency this adds versus the original
+jumper design, and it is capped at 5s and skipped entirely on the reboot that
+leaves config mode - normal, repeated play pays it exactly once per physical
+power cycle, not once per boot.
 
 Config mode reuses `tusb_gamepad`'s existing `INPUT_MODE_USBSERIAL` driver, so no
 USB descriptor was authored or modified. It runs only `tud_task()` plus the
@@ -224,13 +248,17 @@ next power-cycle the slot marked active in flash wins.
 `tools/configurator/index.html` — a single self-contained file: no framework, no
 build step, no network access.
 
-1. Put the board in config mode (short GP15 to GND, power-cycle).
+1. Plug the board in (or power-cycle it) — it comes up in config mode by
+   default. Ground GP29 first if you want more than the 5-second grace
+   window to connect.
 2. Open `tools/configurator/index.html` in desktop **Chrome or Edge**. Web Serial
    is Chromium-only; Firefox and Safari do not implement it.
-3. Click **Connect** and pick the board's serial port.
+3. Click **Connect** and pick the board's serial port (do this within 5s of
+   powering on, unless GP29 is grounded).
 4. It loads all 4 slots, then lets you edit the filter knobs and the macro list.
 5. **Save + Commit** stages every slot, verifies CRCs, then commits to flash.
-6. Remove the jumper and power-cycle to use the new configuration.
+6. Click **Switch to Xbox mode** (or power-cycle / remove the GP29 jumper) to
+   use the new configuration.
 
 The UI covers the portable macro types with their type-specific fields.
 AimSnap / AimSmooth / TriggerBot / AdaptiveRecoil / LuaScript appear in the type

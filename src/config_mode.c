@@ -27,26 +27,16 @@
 #include "config_mode.h"
 #include "profile_store.h"
 #include "macro_types.h"
+#include "macro_engine.h"
+#include "boot_request.h"
 
-// ── Pin sampling ─────────────────────────────────────────────────────────────
+// ── Entry detection ──────────────────────────────────────────────────────────
+// GP29 is sampled separately, by gp29_grounded() further down, once config
+// mode has already started - it doesn't gate ENTRY any more (config mode is
+// the unconditional default), only whether the grace window applies.
 bool config_mode_requested(void)
 {
-    gpio_init(CONFIG_MODE_PIN);
-    gpio_set_dir(CONFIG_MODE_PIN, GPIO_IN);
-    gpio_pull_up(CONFIG_MODE_PIN);
-
-    // The internal pull-up drives a ~50 kOhm net; give it time against pin and
-    // wire capacitance before sampling, then sample a few times and require
-    // agreement. A single read right after enabling the pull-up can catch the
-    // line mid-rise and put a normally-booting board into config mode, which
-    // would look exactly like "the dongle stopped working".
-    sleep_ms(5);
-    int low = 0;
-    for (int i = 0; i < 8; i++) {
-        if (!gpio_get(CONFIG_MODE_PIN)) low++;
-        sleep_us(200);
-    }
-    return low >= 6; // grounded
+    return !boot_request_skip_config();
 }
 
 // ── CDC line I/O ─────────────────────────────────────────────────────────────
@@ -243,6 +233,50 @@ static void handle_command(char *line)
         return;
     }
 
+    // DIAG -> what the macro engine would ACTUALLY run, as opposed to what the
+    // store happens to hold. The distinction is the whole point: `count` is the
+    // profile's macro_count, `engine` is how many of those survived
+    // macro_engine_load()'s filter (enabled != 0 and type < MACRO_TYPE_COUNT).
+    // engine=0 with count>0 means every macro was rejected - that is a data
+    // problem, not a gate problem, and no amount of button-holding will fix it.
+    //
+    // Re-binds before reporting so the answer reflects the current RAM working
+    // copy, including WRITEs and an ACTIVE change made earlier in this session.
+    // Safe here and nowhere else: config mode never launches core 1, so nothing
+    // is reading engine state while we rebind it.
+    //
+    // Per-macro fields are type/enabled/trigger_source/activation_button, i.e.
+    // every input to every activation gate in macro_engine.c, in one line.
+    if (strcmp(cmd, "DIAG") == 0) {
+        uint32_t slot = profile_store_active_index();
+        profile_store_set_active(slot);
+
+        const profile_t *p = profile_store_active();
+        int32_t count = p->macro_count;
+        if (count < 0) count = 0;
+        if (count > MACROS_PER_PROFILE) count = MACROS_PER_PROFILE;
+
+        char buf[512];
+        int n = snprintf(buf, sizeof(buf), "DIAG slot=%u count=%d engine=%d",
+                         (unsigned)slot, (int)count, macro_engine_active_count());
+
+        // Bounded: stop early rather than truncate mid-field, so a partial line
+        // is still parseable instead of ending in half a hex number.
+        for (int i = 0; i < count; i++) {
+            if (n < 0 || n > (int)sizeof(buf) - 32) break;
+            const macro_definition_t *m = &p->macros[i];
+            n += snprintf(buf + n, sizeof(buf) - (size_t)n,
+                          " m%d=%u/%u/%u/%lx",
+                          i,
+                          (unsigned)m->type,
+                          (unsigned)m->enabled,
+                          (unsigned)m->trigger_source,
+                          (unsigned long)m->activation_button);
+        }
+        cdc_sendln(buf);
+        return;
+    }
+
     // RESET <slot> -> compiled-in defaults (RAM only until COMMIT)
     if (strcmp(cmd, "RESET") == 0) {
         char *a = next_token(&cursor);
@@ -266,12 +300,54 @@ static void handle_command(char *line)
         return;
     }
 
+    // REBOOT -> leave config mode and warm-reboot into normal (XInput)
+    // operation, so the configurator doesn't need an unplug/replug to finish.
+    if (strcmp(cmd, "REBOOT") == 0) {
+        cdc_sendln("OK rebooting");
+        tud_cdc_write_flush();
+        for (int i = 0; i < 64; i++) tud_task();
+        boot_request_go_xinput(); // never returns
+    }
+
     cdc_sendln("ERR cmd");
 }
 
+// ── Grace window ─────────────────────────────────────────────────────────────
+// Config mode is the default on every power-on, so it needs a way to give up
+// and become a controller if nobody is actually configuring it. GP29 grounded
+// suspends that: hold it down (or leave a jumper on) while you take as long as
+// you like, at the cost of doing it by hand instead of solder-free.
+#define CONFIG_GRACE_MS 5000u
+
+static bool gp29_grounded(void)
+{
+    gpio_init(CONFIG_MODE_PIN);
+    gpio_set_dir(CONFIG_MODE_PIN, GPIO_IN);
+    gpio_pull_up(CONFIG_MODE_PIN);
+
+    // The internal pull-up drives a ~50 kOhm net; give it time against pin and
+    // wire capacitance before sampling, then sample a few times and require
+    // agreement. A single read right after enabling the pull-up can catch the
+    // line mid-rise and misread a floating pin as grounded.
+    sleep_ms(5);
+    int low = 0;
+    for (int i = 0; i < 8; i++) {
+        if (!gpio_get(CONFIG_MODE_PIN)) low++;
+        sleep_us(200);
+    }
+    return low >= 6; // grounded
+}
+
 // ── Main loop ────────────────────────────────────────────────────────────────
+static bool s_grace_active;
+static uint32_t s_grace_deadline_ms;
+
 static void config_mode_task(void)
 {
+    if (s_grace_active && to_ms_since_boot(get_absolute_time()) >= s_grace_deadline_ms) {
+        boot_request_go_xinput(); // never returns
+    }
+
     if (!tud_cdc_connected()) return;
 
     while (tud_cdc_available()) {
@@ -280,6 +356,7 @@ static void config_mode_task(void)
 
         if (ch == '\n' || ch == '\r') {
             if (s_line_len > 0) {
+                s_grace_active = false; // any complete line cancels the timer for this boot
                 s_line[s_line_len] = '\0';
                 s_line_len = 0;
                 handle_command(s_line);
@@ -291,6 +368,7 @@ static void config_mode_task(void)
         } else {
             // Overlong line: drop it wholesale rather than silently truncating,
             // which would let a corrupted WRITE land at the wrong offset.
+            s_grace_active = false; // still a host talking to us, just malformed
             s_line_len = 0;
             cdc_sendln("ERR toolong");
         }
@@ -306,6 +384,8 @@ void config_mode_run(void)
     init_tusb_gamepad(INPUT_MODE_USBSERIAL);
 
     s_line_len = 0;
+    s_grace_active = !gp29_grounded();
+    s_grace_deadline_ms = to_ms_since_boot(get_absolute_time()) + CONFIG_GRACE_MS;
 
     while (true) {
         tud_task();
