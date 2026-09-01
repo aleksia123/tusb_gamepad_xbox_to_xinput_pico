@@ -125,7 +125,7 @@ int main(void)
     // machine, which is the right starting condition at boot.
     profile_store_set_active(profile_store_active_index());
 
-    enum InputMode input_mode = INPUT_MODE_XINPUT; // choose an input mode
+    enum InputMode input_mode = INPUT_MODE_DINPUT; // choose an input mode
 
     init_tusb_gamepad(input_mode); // initialize usb device with chosen input mode
 
