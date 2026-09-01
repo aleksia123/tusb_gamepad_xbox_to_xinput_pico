@@ -58,6 +58,7 @@
 #include "host/usbh.h"
 #include "xinput_host.h"
 #include "tusb_gamepad.h"
+<<<<<<< HEAD
 #include "pad_config.h"
 #include "axial_deadzone.h"
 #include "stick_geometry_bridge.h"
@@ -65,6 +66,9 @@
 #include "macro_types.h"
 #include "macro_engine.h"
 #include "profile_store.h"
+=======
+#include "stick_correction.h"
+>>>>>>> 4523dba (back now)
 
 //--------------------------------------------------------------------+
 // State
@@ -73,8 +77,7 @@
 static bool    xinput_mounted = false;
 static uint8_t xinput_dev_addr = 0;
 static uint8_t xinput_instance = 0;
-static uint8_t motor_left  = 0;
-static uint8_t motor_right = 0;
+
 
 //--------------------------------------------------------------------+
 // Phase 4 helpers: macro engine bridge + on-pad profile switching
@@ -184,8 +187,6 @@ void hid_app_task(void)
     if (now - start_ms >= interval_ms)
     {
         start_ms = now;
-        // Push the host's requested rumble to the controller (non-blocking).
-        tuh_xinput_set_rumble(xinput_dev_addr, xinput_instance, motor_left, motor_right, false);
         // Re-arm the IN endpoint in case a previous receive_report failed
         tuh_xinput_receive_report(xinput_dev_addr, xinput_instance);
     }
@@ -235,6 +236,7 @@ static void process_xinput(const xinput_gamepad_t* p)
     joy.rx = p->sThumbRX;
     joy.ry = p->sThumbRY;
 
+<<<<<<< HEAD
     // --- On-pad profile switching (before anything reads the config) ---
     // Runs first so a slot change takes effect on this very report rather than
     // the next one, and so the combo buttons are stripped before the macro engine
@@ -303,6 +305,10 @@ static void process_xinput(const xinput_gamepad_t* p)
         joy.rx = ms.rx; joy.ry = ms.ry;
         trig.l = ms.lt; trig.r = ms.rt;
     }
+=======
+    // Anti-snapback correction (left stick untouched).
+    correct_right_stick(&joy.rx, &joy.ry);
+>>>>>>> 4523dba (back now)
 
     // Commit to shared gamepad — no zero window visible to core 0
     gp->buttons   = btns;
@@ -310,10 +316,6 @@ static void process_xinput(const xinput_gamepad_t* p)
     gp->joysticks = joy;
 
     __dmb();
-
-    // Pass the host's requested rumble back out (sent in hid_app_task()).
-    motor_left  = gp->rumble.l;
-    motor_right = gp->rumble.r;
 }
 
 //--------------------------------------------------------------------+
@@ -337,15 +339,12 @@ void tuh_xinput_mount_cb(uint8_t dev_addr, uint8_t instance, const xinputh_inter
     {
         xinput_dev_addr = dev_addr;
         xinput_instance = instance;
-        motor_left  = 0;
-        motor_right = 0;
         xinput_mounted = true;
     }
 
     // Light player-1 LED, clear rumble, then start the input stream.
     tuh_xinput_set_led(dev_addr, instance, 0, true);
     tuh_xinput_set_led(dev_addr, instance, 1, true);
-    tuh_xinput_set_rumble(dev_addr, instance, 0, 0, true);
     tuh_xinput_receive_report(dev_addr, instance);
 }
 
