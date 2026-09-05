@@ -111,37 +111,6 @@ deflection through a deadzone rescale it was never meant to pass through.
 A profile with no macros costs one NULL/count check, so an unconfigured board's
 path is unchanged.
 
-## What was intentionally stubbed, and why
-
-### AI vision — AimSnap, AimSmooth, TriggerBot, AdaptiveRecoil
-
-The **math is fully ported and live**: FOV acquisition gate, prediction,
-ego-motion feed-forward, velocity feed-forward with deadband, sticky lock,
-target-switch guard, coast guard, EMA output smoothing, the plant-inverted P
-controller, the impulse/cooldown state machine, the burst timer. What is missing
-is the *sensor*.
-
-In ReflexX these macros read an `AiVisionTelemetrySnapshot` produced by a thread
-that captures the screen over DXGI, runs a YOLO `.onnx` model on the GPU via
-DirectML, and tracks the resulting boxes. This dongle has no camera, no
-framebuffer to capture, no GPU, and 520 KB of SRAM against ~30 MB of model
-weights. That pipeline is not unimplemented, it is *unimplementable* on this
-silicon, and the brief scopes it out.
-
-So `aim_context_try_acquire()` in `src/aim_context.c` always reports "no target".
-**This is the C# source's own fallback, not a shortcut**: every one of those
-handlers opens with `if (_aimContext is null) return state;` — the normal case in
-ReflexX's own unit tests — and `AdaptiveRecoil` degrades to `distFactor = 0`,
-which selects the minimum compensation so recoil control never drops to zero
-mid-fight. AdaptiveRecoil therefore still does something useful on-device: it
-behaves as a fixed no-recoil at its Min X/Y values.
-
-The stub is `__attribute__((weak))`, so a future vision coprocessor (an ESP32 with
-a camera over UART, or a host-side helper feeding boxes over the config CDC link)
-provides one strong definition of that symbol and all four macros light up — with
-no change to `macro_engine.c`, the flash layout, or the configurator's wire
-format. `aim_target_t` in `aim_context.h` is the integration contract.
-
 ### LuaScript
 
 `MoonSharp` is .NET-only. An embedded Lua would need roughly 100 KB of flash plus
@@ -259,12 +228,6 @@ build step, no network access.
 5. **Save + Commit** stages every slot, verifies CRCs, then commits to flash.
 6. Click **Switch to Xbox mode** (or power-cycle / remove the GP29 jumper) to
    use the new configuration.
-
-The UI covers the portable macro types with their type-specific fields.
-AimSnap / AimSmooth / TriggerBot / AdaptiveRecoil / LuaScript appear in the type
-dropdown but show a "not available on this hardware yet" note explaining precisely
-what is missing, instead of tuning fields they cannot honour. AdaptiveRecoil keeps
-its Min/Max fields editable, since its Min values do apply.
 
 `tools/configurator/PROTOCOL.md` is the normative wire format: commands, the
 complete binary offset table for every struct, and every enum value. The firmware
