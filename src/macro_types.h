@@ -1,37 +1,3 @@
-// macro_types.h - the data model of the ported ReflexX macro engine.
-//
-// WHY IT LOOKS LIKE THIS
-// The C# source models a macro as a class graph: MacroDefinition owns a
-// MotionScript, a HeadAssistConfig (which owns three more MotionScripts), a
-// ProgressiveRecoilConfig, a ScriptDefinition with a List<ScriptStep>, and so
-// on - all heap-allocated, all reachable by reference, keyed into a
-// Dictionary<string, MacroRuntime> by GUID. None of that survives the trip to
-// an MCU, for three separate reasons:
-//
-//   * No allocator on the hot path. The engine runs inside the XInput report
-//     callback at up to 1 kHz; a malloc there is a latency bomb. Everything is
-//     therefore a fixed-size, by-value struct living inside one profile object.
-//
-//   * The profile has to be memcpy-able to flash AND parseable by the browser
-//     configurator (tools/configurator). So the struct layout IS the wire
-//     format - see tools/configurator/PROTOCOL.md, which documents these exact
-//     offsets. Two consequences you must respect when editing this file:
-//       - every field is a fixed-width type, ordered so natural alignment
-//         alone produces a deterministic layout (no __attribute__((packed)),
-//         which would cost byte-wise float access on every tick);
-//       - the _Static_assert block at the bottom locks the sizes. If you add a
-//         field, the assert fires, and you must bump PROFILE_STORE_VERSION and
-//         update PROTOCOL.md. That is intentional friction: a silent layout
-//         change would make every board read stale flash as garbage.
-//
-//   * No Dictionary. MacroRuntime is a parallel fixed array indexed by macro
-//     SLOT, not by GUID. Slot i's runtime state is runtimes[i]; deleting a
-//     macro in the configurator clears its runtime, so no stale state leaks
-//     into a different macro that later occupies the slot.
-//
-// Enum values are kept numerically identical to the C# enums (which are plain
-// ordinal enums) so a value written by the configurator means the same thing on
-// both sides and no translation table is needed.
 #ifndef MACRO_TYPES_H
 #define MACRO_TYPES_H
 
@@ -70,41 +36,12 @@
 #define GP_B               0x00002000u
 #define GP_X               0x00004000u
 #define GP_Y               0x00008000u
-// Above the 16-bit XInput button mask. The C# enum reserves this bit for
-// TouchpadClick; on an Xbox pad the equivalent extra button is Share/Capture,
-// which the XInput host driver reports as `misc`. Never emitted to the virtual
-// controller (XInput has no wire bit for it) - usable as a macro activation
-// source only, which is exactly how the source treats its extended bits.
+
 #define GP_MISC            0x00100000u
 
 // ── Ordinal enums (values match C# exactly) ──────────────────────────────────
 typedef enum {
-    MACRO_NO_RECOIL = 0,
-    MACRO_AUTO_FIRE,
-    MACRO_AUTO_PING,
-    MACRO_REMAP,
-    MACRO_SEQUENCE,
-    MACRO_TOGGLE,
-    MACRO_AIM_ASSIST_BUFF,
-    MACRO_HEAD_ASSIST,
-    MACRO_SCRIPTED_SHAPE,
-    MACRO_PROGRESSIVE_RECOIL,
-    MACRO_TRACKING_ASSIST,
-    MACRO_AUTO_FIRE_NO_RECOIL,
-    MACRO_INSTA_DROP_SHOT,
-    MACRO_JUMP_SHOT,
-    MACRO_STRAFE_SHOT,
-    MACRO_HOLD_BREATH,
-    MACRO_SLIDE_CANCEL,
-    MACRO_FAST_DROP,
-    MACRO_AUTO_SPRINT,
-    MACRO_CROWBAR,
-    MACRO_CUSTOM,
-    MACRO_LUA_SCRIPT,
     MACRO_AIM_SNAP,
-    MACRO_AIM_SMOOTH,
-    MACRO_TRIGGER_BOT,
-    MACRO_ADAPTIVE_RECOIL,
     MACRO_TYPE_COUNT
 } macro_type_t;
 
@@ -146,8 +83,6 @@ typedef enum {
     DSRC_MANUAL,
     DSRC_AUTO
 } distance_source_t;
-
-typedef enum { CROWBAR_RAPIDO = 0, CROWBAR_PADRAO } crowbar_mode_t;
 
 typedef enum {
     AXIS_LEFT_STICK_X = 0,
@@ -395,11 +330,7 @@ typedef struct {
 } script_definition_t;
 
 // ── MacroDefinition ──────────────────────────────────────────────────────────
-// One flat record. Every type-specific config is embedded by value even when
-// unused by this macro's type - that costs flash/RAM but buys a fixed stride,
-// which is what makes the array indexable, the flash image memcpy-able and the
-// browser-side offsets computable. At 16 macros the waste is a few KB of a
-// 520 KB SRAM budget.
+
 typedef struct {
     char     name[MACRO_NAME_LEN];
 
@@ -419,98 +350,22 @@ typedef struct {
     uint8_t  activate_on_ads;    // bool
     uint8_t  _pad0[2];
 
-    // Intensity / randomisation
-    float    intensity;
-    float    randomization_factor;
-
-    // AutoPing
-    uint32_t ping_button;
-
-    // Remap
-    uint32_t source_button;
-    uint32_t target_button;
-
-    // NoRecoil
-    int32_t  recoil_compensation_x;
-    int32_t  recoil_compensation_y;
-
-    // AimAssistBuff
-    int32_t  flick_strength;
-    int32_t  flick_interval_ms;
-
-    // InstaDropShot / FastDrop
-    uint32_t crouch_button;
-    // JumpShot
-    uint32_t jump_button;
-    int32_t  jump_interval_ms;
-    // StrafeShot
-    float    strafe_amplitude;
-    int32_t  strafe_interval_ms;
-    // AutoSprint
-    uint32_t sprint_button;
-    float    sprint_threshold;
-    int32_t  sprint_press_duration_ms;
-    // HoldBreath
-    uint32_t breath_button;
-    // SlideCancel
-    uint32_t slide_button;
-    uint32_t slide_cancel_button;
-    int32_t  slide_cancel_delay_ms;
-
     // Sequence
     int32_t  step_count;
     macro_step_t steps[MACRO_MAX_SEQ_STEPS];
 
     // Type-specific config blocks
-    motion_script_t              motion;
-    head_assist_config_t         head_assist;
-    progressive_recoil_config_t  progressive_recoil;
-    tracking_assist_config_t     tracking_assist;
-    crowbar_config_t             crowbar;
-    adaptive_recoil_config_t     adaptive_recoil;
     aim_assist_config_t          aim_assist;
     script_definition_t          script;
 } macro_definition_t;
 
 // ── MacroRuntime ─────────────────────────────────────────────────────────────
-// Field-for-field the C# private MacroRuntime class. Lives in RAM only, never
-// persisted, and is zeroed whenever the active profile changes (macro_engine_reset)
-// so a macro can never inherit another macro's half-finished state machine.
-// Every *_tick field uses 0 = "never" and relies on mono_clock.h's epoch bias.
 typedef struct {
     int64_t last_fire_tick;
     int64_t pulse_until_tick;
     uint8_t toggle_state;
     uint8_t was_pressed;
     int32_t step_index;
-
-    // ScriptedShape / HeadAssist
-    int64_t motion_activation_tick;
-    int64_t head_assist_activation_tick;
-    int64_t last_head_assist_tick;
-    int64_t trigger_down_since_tick;
-    int64_t ads_down_since_tick;
-    uint8_t was_fire_pressed;
-    uint8_t was_cycle_button_pressed;
-    uint8_t manual_level;               // distance_level_t, defaults Medium
-    uint8_t current_head_assist_level;  // distance_level_t, defaults Medium
-
-    // ProgressiveRecoil
-    int64_t progressive_fire_start_tick;
-
-    // TrackingAssist
-    int64_t tracking_start_tick;
-
-    // SlideCancel
-    int64_t slide_start_tick;
-    uint8_t was_slide_pressed;
-
-    // FastDrop
-    int64_t fast_drop_start_tick;
-
-    // AutoSprint
-    uint8_t was_sprint_armed;
-    int64_t sprint_release_tick;
 
     // Custom script sequencer
     int32_t script_step_index;
@@ -554,11 +409,6 @@ _Static_assert(sizeof(motion_script_t)    == 44,  "motion_script_t layout change
 _Static_assert(sizeof(macro_step_t)       == 12,  "macro_step_t layout changed");
 _Static_assert(sizeof(script_step_t)      == 24,  "script_step_t layout changed");
 _Static_assert(sizeof(macro_gamepad_state_t) == 16, "macro_gamepad_state_t layout changed");
-_Static_assert(sizeof(head_assist_config_t)        == 184, "head_assist_config_t layout changed");
-_Static_assert(sizeof(progressive_recoil_config_t) ==  56, "progressive_recoil_config_t layout changed");
-_Static_assert(sizeof(tracking_assist_config_t)    ==  32, "tracking_assist_config_t layout changed");
-_Static_assert(sizeof(crowbar_config_t)            ==  32, "crowbar_config_t layout changed");
-_Static_assert(sizeof(adaptive_recoil_config_t)    ==  24, "adaptive_recoil_config_t layout changed");
 _Static_assert(sizeof(aim_assist_config_t)         ==  80, "aim_assist_config_t layout changed");
 _Static_assert(sizeof(script_definition_t)         == 412, "script_definition_t layout changed");
 _Static_assert(sizeof(macro_definition_t)          == 1100, "macro_definition_t layout changed");
